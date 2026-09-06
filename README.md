@@ -1,2 +1,1 @@
-# scripts
-Scripts for Sashimi Kernel
+## Scripts - Sashimi Kernel
