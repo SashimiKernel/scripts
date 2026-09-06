@@ -36,7 +36,7 @@ msg_id=$(echo "$initial_res" | jq -r '.result.message_id // empty' 2>/dev/null |
 if [[ -n "$msg_id" ]]; then
     (
         while true; do
-            sleep 30
+            sleep 5
             now=$(date +%s)
             elapsed=$((now - start_time))
             m=$((elapsed / 60))
