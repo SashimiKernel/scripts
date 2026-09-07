@@ -8,10 +8,17 @@ fi
 BOT_TOKEN="${BOT_TOKEN:-}"
 CHAT_ID="${CHAT_ID:-}"
 MESSAGE_THREAD_ID="${MESSAGE_THREAD_ID:-}"
+BUILD_KSU="${BUILD_KSU:-true}"
 
 if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" ]]; then
     echo "Error: BOT_TOKEN or CHAT_ID not set." >&2
     exit 1
+fi
+
+if [[ "$BUILD_KSU" == "true" ]]; then
+    ksu_status="Yes"
+else
+    ksu_status="No"
 fi
 
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/${GITHUB_RUN_ID:+actions/runs/}${GITHUB_RUN_ID:-}"
@@ -86,6 +93,7 @@ if ./sashimi.sh -v bangkk; then
         caption="🍣 Sashimi Kernel (bangkk)
 • Commit: ${commit_id}
 • Message: ${commit_text}
+• ReSukiSU: ${ksu_status}
 • Duration: ${elapsed_minutes}m ${elapsed_seconds}s (<a href=\"${RUN_URL}\">Workflow</a>)"
 
         curl -s -f \
