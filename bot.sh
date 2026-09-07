@@ -34,9 +34,8 @@ initial_res=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMess
     -d chat_id="$CHAT_ID" \
     ${MESSAGE_THREAD_ID:+-d message_thread_id="$MESSAGE_THREAD_ID"} \
     -d parse_mode="HTML" \
-    --data-urlencode "text=Compiling Kernel
-Stage: Compiling Kernel
-Status: 0m 00s")
+    --data-urlencode "text=<b>- Compiling Kernel</b>
+• Elapsed: 0m 00s")
 
 msg_id=$(echo "$initial_res" | jq -r '.result.message_id // empty' 2>/dev/null || echo "$initial_res" | grep -oP '"message_id":\s*\K[0-9]+' | head -n 1)
 
@@ -54,9 +53,8 @@ if [[ -n "$msg_id" ]]; then
                 -d chat_id="$CHAT_ID" \
                 -d message_id="$msg_id" \
                 -d parse_mode="HTML" \
-                --data-urlencode "text=Compiling Kernel
-Stage: Compiling Kernel
-Status: ${status_time}" > /dev/null 2>&1 || true
+                --data-urlencode "text=<b>- Compiling Kernel</b>
+• Elapsed: ${status_time}" > /dev/null 2>&1 || true
         done
     ) &
     timer_pid=$!
