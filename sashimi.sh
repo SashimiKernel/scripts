@@ -19,7 +19,6 @@ export LLVM=1
 AK3_DIR="$HOME/AnyKernel3"
 VARIANTS=("bangkk")
 DEFCONFIGS=("vendor/bangkk_defconfig")
-ZIPNAME_PREFIX="Sashimi-$(date '+%Y%m%d-%H%M')"
 LOG_FILE="moe.log"
 : > "$LOG_FILE"
 
@@ -100,6 +99,12 @@ cp out/.config AnyKernel3/config
 cp out/arch/arm64/boot/Image AnyKernel3/Image
 [ -f out/arch/arm64/boot/dtb.img ] && cp out/arch/arm64/boot/dtb.img AnyKernel3/dtb
 [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
+
+if grep -q "^CONFIG_KSU=y" out/.config 2>/dev/null || grep -q "^CONFIG_KSU=y" arch/arm64/configs/moto.config 2>/dev/null; then
+	ZIPNAME_PREFIX="Sashimi-ksu-$(date '+%Y%m%d-%H%M')"
+else
+	ZIPNAME_PREFIX="Sashimi-$(date '+%Y%m%d-%H%M')"
+fi
 
 ZIPNAME="${ZIPNAME_PREFIX}-${VARIANT}.zip"
 cd AnyKernel3
