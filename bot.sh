@@ -30,6 +30,33 @@ commit_id=$(git log -1 --format='%h')
 commit_text=$(git log -1 --format='%s')
 start_time=$(date +%s)
 
+notify_failure() {
+    local reason="$1"
+    end_time=$(date +%s)
+    elapsed_time=$((end_time - start_time))
+    elapsed_minutes=$((elapsed_time / 60))
+    elapsed_seconds=$((elapsed_time % 60))
+
+    fail_text="${reason} at ${elapsed_minutes}m ${elapsed_seconds}s"
+    keyboard="{\"inline_keyboard\":[[{\"text\":\"Compilation\",\"url\":\"${RUN_URL}\"}]]}"
+
+    if [[ -n "${msg_id:-}" ]]; then
+        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+            -d chat_id="$CHAT_ID" \
+            -d message_id="$msg_id" \
+            -d parse_mode="HTML" \
+            --data-urlencode "text=${fail_text}" \
+            -d reply_markup="$keyboard" > /dev/null 2>&1 || true
+    else
+        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="$CHAT_ID" \
+            ${MESSAGE_THREAD_ID:+-d message_thread_id="$MESSAGE_THREAD_ID"} \
+            -d parse_mode="HTML" \
+            --data-urlencode "text=${fail_text}" \
+            -d reply_markup="$keyboard" > /dev/null 2>&1 || true
+    fi
+}
+
 initial_res=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
     -d chat_id="$CHAT_ID" \
     ${MESSAGE_THREAD_ID:+-d message_thread_id="$MESSAGE_THREAD_ID"} \
@@ -38,6 +65,11 @@ initial_res=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMess
 • Elapsed: 0m 00s")
 
 msg_id=$(echo "$initial_res" | jq -r '.result.message_id // empty' 2>/dev/null || echo "$initial_res" | grep -oP '"message_id":\s*\K[0-9]+' | head -n 1)
+
+if [[ -z "$msg_id" ]]; then
+    echo "Warning: could not extract message_id, Telegram API said:" >&2
+    echo "$initial_res" >&2
+fi
 
 if [[ -n "$msg_id" ]]; then
     (
@@ -66,7 +98,14 @@ stop_timer() {
         wait "$timer_pid" 2>/dev/null || true
     fi
 }
+
+on_interrupt() {
+    stop_timer
+    notify_failure "Compilation Interrupted"
+    exit 1
+}
 trap stop_timer EXIT
+trap on_interrupt INT TERM
 
 if ./sashimi.sh -v bangkk; then
     stop_timer
@@ -86,21 +125,30 @@ if ./sashimi.sh -v bangkk; then
     shopt -u nullglob
 
     if [[ ${#zips[@]} -gt 0 ]]; then
-        zip_file="${zips[0]}"
+        zip_file=$(ls -t "${zips[@]}" | head -n 1)
 
-        caption="🍣 Sashimi Kernel (bangkk)
+        caption_text="🍣 Sashimi Kernel (bangkk)
 • Commit: ${commit_id}
 • Message: ${commit_text}
 • ReSukiSU: ${ksu_status}
 • Duration: ${elapsed_minutes}m ${elapsed_seconds}s (<a href=\"${RUN_URL}\">Workflow</a>)"
+        caption="${caption_text:0:1024}"
 
-        curl -s -f \
+        if ! curl -s -f \
             -F chat_id="$CHAT_ID" \
             -F document=@"$zip_file" \
             ${MESSAGE_THREAD_ID:+-F message_thread_id="$MESSAGE_THREAD_ID"} \
             -F caption="$caption" \
             -F parse_mode="HTML" \
-            "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" > /dev/null
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" > /dev/null; then
+            echo "Warning: build succeeded but Telegram upload failed." >&2
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d chat_id="$CHAT_ID" \
+                ${MESSAGE_THREAD_ID:+-d message_thread_id="$MESSAGE_THREAD_ID"} \
+                -d parse_mode="HTML" \
+                --data-urlencode "text=Build succeeded (${zip_file}) but upload to Telegram failed. Check the <a href=\"${RUN_URL}\">workflow</a> artifacts." \
+                > /dev/null 2>&1 || true
+        fi
     else
         echo "Warning: Build succeeded but no .zip output was found." >&2
     fi
@@ -108,30 +156,7 @@ if ./sashimi.sh -v bangkk; then
     exit 0
 else
     stop_timer
-    end_time=$(date +%s)
-    elapsed_time=$((end_time - start_time))
-    elapsed_minutes=$((elapsed_time / 60))
-    elapsed_seconds=$((elapsed_time % 60))
-
-    fail_text="Compilation Failed at ${elapsed_minutes}m ${elapsed_seconds}s"
-    keyboard="{\"inline_keyboard\":[[{\"text\":\"Compilation\",\"url\":\"${RUN_URL}\"}]]}"
-
-    if [[ -n "$msg_id" ]]; then
-        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-            -d chat_id="$CHAT_ID" \
-            -d message_id="$msg_id" \
-            -d parse_mode="HTML" \
-            --data-urlencode "text=${fail_text}" \
-            -d reply_markup="$keyboard" > /dev/null 2>&1 || true
-    else
-        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d chat_id="$CHAT_ID" \
-            ${MESSAGE_THREAD_ID:+-d message_thread_id="$MESSAGE_THREAD_ID"} \
-            -d parse_mode="HTML" \
-            --data-urlencode "text=${fail_text}" \
-            -d reply_markup="$keyboard" > /dev/null 2>&1 || true
-    fi
-
+    notify_failure "Compilation Failed"
     echo "Build failed." >&2
     exit 1
 fi
