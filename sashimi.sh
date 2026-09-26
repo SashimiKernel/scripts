@@ -19,7 +19,7 @@ export LLVM=1
 AK3_DIR="$HOME/AnyKernel3"
 VARIANTS=("bangkk")
 DEFCONFIGS=("vendor/bangkk_defconfig")
-LOG_FILE="moe.log"
+LOG_FILE="sashimi.log"
 : > "$LOG_FILE"
 
 if [[ $# -ne 2 || $1 != "-v" || ! " ${VARIANTS[*]} " =~ " $2 " ]]; then
@@ -28,7 +28,21 @@ if [[ $# -ne 2 || $1 != "-v" || ! " ${VARIANTS[*]} " =~ " $2 " ]]; then
 fi
 
 VARIANT="$2"
-DEFCONFIG="${DEFCONFIGS[0]}"
+DEFCONFIG_INDEX=-1
+for i in "${!VARIANTS[@]}"; do
+	if [ "${VARIANTS[$i]}" = "$VARIANT" ]; then
+		DEFCONFIG_INDEX=$i
+		break
+	fi
+done
+DEFCONFIG="${DEFCONFIGS[$DEFCONFIG_INDEX]}"
+
+MIN_FREE_GB=20
+AVAIL_GB=$(df --output=avail -BG "$HOME" | tail -n 1 | tr -dc '0-9')
+if [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
+	echo "ERROR: only ${AVAIL_GB}G free, need at least ${MIN_FREE_GB}G. Aborting..." | tee -a "$LOG_FILE"
+	exit 1
+fi
 
 if ! [ -f "${LLVM_DIR}/clang" ]; then
 	echo "Clang not found! Downloading AOSP Clang..." | tee -a "$LOG_FILE"
@@ -40,6 +54,10 @@ if ! [ -f "${LLVM_DIR}/clang" ]; then
 	if [ -d "${TC_DIR}/clang-r596125/bin" ]; then
 		mv "${TC_DIR}"/clang-r596125/* "${TC_DIR}/"
 		rm -rf "${TC_DIR}/clang-r596125"
+	fi
+	if ! [ -f "${LLVM_DIR}/clang" ]; then
+		echo "ERROR: clang still missing after extraction. Aborting..." | tee -a "$LOG_FILE"
+		exit 1
 	fi
 	echo "Clang setup completed successfully!" | tee -a "$LOG_FILE"
 fi
@@ -119,7 +137,15 @@ fi
 echo -e "\nCompleted compilation for $DEFCONFIG (variant $VARIANT) in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!" | tee -a "$LOG_FILE"
 echo "Zip: $ZIPNAME" | tee -a "$LOG_FILE"
 
-([ -f ./go-up ] || (wget -q https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up && chmod +x go-up)) || true
+if [ ! -f ./go-up ]; then
+	if wget -q https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up -O go-up.tmp && [ -s go-up.tmp ]; then
+		mv go-up.tmp go-up
+		chmod +x go-up
+	else
+		rm -f go-up.tmp
+		echo "Warning: go-up download failed, skipping upload..." | tee -a "$LOG_FILE"
+	fi
+fi
 if [ -f ./go-up ]; then
 	./go-up "$ZIPNAME" || echo "Warning: go-up upload failed, skipping..." | tee -a "$LOG_FILE"
 fi
