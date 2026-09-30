@@ -65,7 +65,7 @@ fi
 if command -v ccache &> /dev/null; then
 	export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
 	export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2.5G}"
-	export CCACHE_SLOPPINESS="time_macros,include_file_mtime"
+	export CCACHE_SLOPPINESS="${CCACHE_SLOPPINESS:-time_macros,include_file_mtime}"
 	CC_COMPILER="ccache ${LLVM_DIR}/clang"
 else
 	CC_COMPILER="${LLVM_DIR}/clang"
@@ -126,7 +126,7 @@ fi
 
 ZIPNAME="${ZIPNAME_PREFIX}-${VARIANT}.zip"
 cd AnyKernel3
-zip -r1q "../$ZIPNAME" * -x .git README.md *placeholder | tee -a "../$LOG_FILE"
+zip -r1q "../$ZIPNAME" * -x ".git" "README.md" "*placeholder" | tee -a "../$LOG_FILE"
 cd ..
 
 if command -v ccache &> /dev/null; then
@@ -137,17 +137,19 @@ fi
 echo -e "\nCompleted compilation for $DEFCONFIG (variant $VARIANT) in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!" | tee -a "$LOG_FILE"
 echo "Zip: $ZIPNAME" | tee -a "$LOG_FILE"
 
-if [ ! -f ./go-up ]; then
-	if wget -q https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up -O go-up.tmp && [ -s go-up.tmp ]; then
-		mv go-up.tmp go-up
-		chmod +x go-up
-	else
-		rm -f go-up.tmp
-		echo "Warning: go-up download failed, skipping upload..." | tee -a "$LOG_FILE"
+if [ "${SKIP_UPLOAD:-0}" != "1" ]; then
+	if [ ! -f ./go-up ]; then
+		if wget -q https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up -O go-up.tmp && [ -s go-up.tmp ]; then
+			mv go-up.tmp go-up
+			chmod +x go-up
+		else
+			rm -f go-up.tmp
+			echo "Warning: go-up download failed, skipping upload..." | tee -a "$LOG_FILE"
+		fi
 	fi
-fi
-if [ -f ./go-up ]; then
-	./go-up "$ZIPNAME" || echo "Warning: go-up upload failed, skipping..." | tee -a "$LOG_FILE"
+	if [ -f ./go-up ]; then
+		./go-up "$ZIPNAME" || echo "Warning: go-up upload failed, skipping..." | tee -a "$LOG_FILE"
+	fi
 fi
 
 rm -rf AnyKernel3
