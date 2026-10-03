@@ -129,7 +129,8 @@ cp out/arch/arm64/boot/Image AnyKernel3/Image
 [ -f out/arch/arm64/boot/dtb.img ] && cp out/arch/arm64/boot/dtb.img AnyKernel3/dtb
 [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
 
-GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)
+GIT_HASH=$(git rev-parse HEAD 2>/dev/null | cut -c1-7 || true)
+GIT_HASH="${GIT_HASH:-nogit}"
 
 if grep -q "^CONFIG_KSU=y" out/.config; then
 	ZIPNAME_PREFIX="Sashimi-ksu-$(date '+%Y%m%d-%H%M')-${GIT_HASH}"
