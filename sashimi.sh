@@ -22,10 +22,25 @@ export LLVM=1
 AK3_DIR="$HOME/AnyKernel3"
 LOG_FILE="sashimi.log"
 MIN_FREE_GB=20
+TC_TMP=""
 : > "$LOG_FILE"
 
+log() {
+	printf '%b\n' "$*" | tee -a "$LOG_FILE"
+}
+
+die() {
+	log "ERROR: $*"
+	exit 1
+}
+
+cleanup() {
+	rm -rf AnyKernel3 ${TC_TMP:+"$TC_TMP"}
+}
+trap cleanup EXIT
+
 usage() {
-	echo "Use: $0 -v {bangkk}" | tee -a "$LOG_FILE"
+	log "Use: $0 -v {bangkk}"
 	exit 1
 }
 
@@ -39,37 +54,40 @@ case "$VARIANT" in
 	*) usage ;;
 esac
 
+for tool in curl tar make git zip; do
+	command -v "$tool" > /dev/null || die "$tool not found. Aborting..."
+done
+
 AVAIL_GB=$(df --output=avail -BG . | tail -n 1 | tr -dc '0-9')
 if [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
-	echo "ERROR: only ${AVAIL_GB}G free, need at least ${MIN_FREE_GB}G. Aborting..." | tee -a "$LOG_FILE"
-	exit 1
+	die "only ${AVAIL_GB}G free, need at least ${MIN_FREE_GB}G. Aborting..."
 fi
 
-if ! [ -x "${LLVM_DIR}/clang" ]; then
-	echo "Clang not found! Downloading AOSP Clang..." | tee -a "$LOG_FILE"
+setup_clang() {
+	local src
+	log "Clang not found! Downloading AOSP Clang..."
 	mkdir -p "$HOME/tc"
 	TC_TMP=$(mktemp -d "$HOME/tc/.dl.XXXXXX")
 	if ! curl -fsSL "$CLANG_URL" | tar -xz -C "$TC_TMP" 2>> "$LOG_FILE"; then
-		rm -rf "$TC_TMP"
-		echo "Download failed! Aborting..." | tee -a "$LOG_FILE"
-		exit 1
+		die "Download failed! Aborting..."
 	fi
-	TC_SRC="$TC_TMP"
+	src="$TC_TMP"
 	if [ -d "${TC_TMP}/clang-${CLANG_REV}/bin" ]; then
-		TC_SRC="${TC_TMP}/clang-${CLANG_REV}"
-		fi
+		src="${TC_TMP}/clang-${CLANG_REV}"
 	fi
 	rm -rf "$TC_DIR"
 	mkdir -p "$TC_DIR"
-	mv "$TC_SRC"/* "$TC_DIR"/
+	mv "$src"/* "$TC_DIR"/
 	rm -rf "$TC_TMP"
-	if ! [ -x "${LLVM_DIR}/clang" ]; then
-		echo "ERROR: clang still missing after extraction. Aborting..." | tee -a "$LOG_FILE"
-		exit 1
-	fi
-	echo "Clang setup completed successfully!" | tee -a "$LOG_FILE"
-    fi
-	
+	TC_TMP=""
+	[ -x "${LLVM_DIR}/clang" ] || die "clang still missing after extraction. Aborting..."
+	log "Clang setup completed successfully!"
+}
+
+if ! [ -x "${LLVM_DIR}/clang" ]; then
+	setup_clang
+fi
+
 if command -v ccache &> /dev/null; then
 	export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
 	export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-5G}"
@@ -81,10 +99,10 @@ else
 	CC_COMPILER="${LLVM_DIR}/clang"
 fi
 
-echo -e "\nCompiler info:" | tee -a "$LOG_FILE"
-"${LLVM_DIR}/clang" --version | head -n 1 | tee -a "$LOG_FILE"
-"${LLVM_DIR}/ld.lld" --version | head -n 1 | tee -a "$LOG_FILE"
-echo -e "\nCompiling for $DEFCONFIG with variant $VARIANT..." | tee -a "$LOG_FILE"
+log "\nCompiler info:"
+"${LLVM_DIR}/clang" --version | sed -n 1p | tee -a "$LOG_FILE"
+"${LLVM_DIR}/ld.lld" --version | sed -n 1p | tee -a "$LOG_FILE"
+log "\nCompiling for $DEFCONFIG with variant $VARIANT..."
 
 mkdir -p out
 ARGS=(
@@ -103,19 +121,20 @@ ARGS=(
 )
 
 make "${ARGS[@]}" O=out "$DEFCONFIG" moto.config | tee -a "$LOG_FILE"
-make "${ARGS[@]}" O=out -j"$(nproc)" | tee -a "$LOG_FILE"
 
-if [ ! -e "out/arch/arm64/boot/Image" ]; then
-	echo "ERROR: Image binary not found. Compilation failed!" | tee -a "$LOG_FILE"
-	exit 1
+if grep -q '^CONFIG_KSU=y' out/.config && ! grep -qE '^CONFIG_(KSU_SUSFS|KSU_MANUAL_HOOK)=y' out/.config; then
+	die "CONFIG_KSU=y needs CONFIG_KSU_SUSFS=y or CONFIG_KSU_MANUAL_HOOK=y. Aborting..."
 fi
 
-echo -e "\nKernel compiled successfully for $DEFCONFIG! Zipping up...\n" | tee -a "$LOG_FILE"
+make "${ARGS[@]}" O=out -j"$(nproc)" | tee -a "$LOG_FILE"
 
-cleanup() {
-	rm -rf AnyKernel3
-}
-trap cleanup EXIT
+[ -e "out/arch/arm64/boot/Image" ] || die "Image binary not found. Compilation failed!"
+
+log "\nKernel compiled successfully for $DEFCONFIG! Zipping up...\n"
+for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE; do
+	log "$(grep -E "^CONFIG_${sym}=" out/.config || echo "CONFIG_${sym} is not set")"
+done
+
 rm -rf AnyKernel3
 
 if [ -d "$AK3_DIR" ]; then
@@ -143,12 +162,12 @@ ZIPNAME="${ZIPNAME_PREFIX}-${VARIANT}.zip"
 (cd AnyKernel3 && zip -r9q "../$ZIPNAME" . -x ".git*" "README.md" "*placeholder")
 
 if command -v ccache &> /dev/null; then
-	echo -e "\nccache statistics:" | tee -a "$LOG_FILE"
+	log "\nccache statistics:"
 	ccache -s | tee -a "$LOG_FILE"
 fi
 
-echo -e "\nCompleted compilation for $DEFCONFIG (variant $VARIANT) in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!" | tee -a "$LOG_FILE"
-echo "Zip: $ZIPNAME" | tee -a "$LOG_FILE"
+log "\nCompleted compilation for $DEFCONFIG (variant $VARIANT) in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!"
+log "Zip: $ZIPNAME"
 
 if [ "${SKIP_UPLOAD:-0}" != "1" ]; then
 	if [ ! -f ./go-up ]; then
@@ -157,10 +176,10 @@ if [ "${SKIP_UPLOAD:-0}" != "1" ]; then
 			chmod +x go-up
 		else
 			rm -f go-up.tmp
-			echo "Warning: go-up download or verification failed, skipping upload..." | tee -a "$LOG_FILE"
+			log "Warning: go-up download or verification failed, skipping upload..."
 		fi
 	fi
 	if [ -f ./go-up ]; then
-		./go-up "$ZIPNAME" || echo "Warning: go-up upload failed, skipping..." | tee -a "$LOG_FILE"
+		./go-up "$ZIPNAME" || log "Warning: go-up upload failed, skipping..."
 	fi
 fi
