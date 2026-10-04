@@ -75,6 +75,7 @@ if [[ -z "$msg_id" ]]; then
     echo "Warning: could not extract message_id, Telegram API said:" >&2
     echo "$initial_res" >&2
 else
+    echo "$msg_id" > "${RUNNER_TEMP:-/tmp}/tg_msg_id"
     (
         while true; do
             sleep "$TIMER_INTERVAL"
