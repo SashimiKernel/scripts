@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+
+set -Eeuo pipefail
 
 BOT_TOKEN="${BOT_TOKEN:-}"
 CHAT_ID="${CHAT_ID:-}"
@@ -7,157 +8,264 @@ MESSAGE_THREAD_ID="${MESSAGE_THREAD_ID:-}"
 TIMER_INTERVAL="${TIMER_INTERVAL:-10}"
 
 if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" ]]; then
-    echo "Error: BOT_TOKEN or CHAT_ID not set." >&2
-    exit 1
+	printf 'Error: BOT_TOKEN or CHAT_ID not set.\n' >&2
+	exit 1
 fi
 
-API="https://api.telegram.org/bot${BOT_TOKEN}"
+[[ "$TIMER_INTERVAL" =~ ^[1-9][0-9]*$ ]] || {
+	printf 'Error: TIMER_INTERVAL must be a positive integer.\n' >&2
+	exit 1
+}
+if [[ -n "$MESSAGE_THREAD_ID" && ! "$MESSAGE_THREAD_ID" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'Error: MESSAGE_THREAD_ID must be a positive integer.\n' >&2
+	exit 1
+fi
 
+for tool in curl jq git date sleep stat setsid rm; do
+	command -v "$tool" > /dev/null || {
+		printf 'Error: %s not found.\n' "$tool" >&2
+		exit 1
+	}
+done
+
+[[ -x ./sashimi.sh ]] || {
+	printf 'Error: sashimi.sh is missing or not executable.\n' >&2
+	exit 1
+}
+
+API="https://api.telegram.org/bot${BOT_TOKEN}"
 thread_args=()
+document_thread_args=()
 if [[ -n "$MESSAGE_THREAD_ID" ]]; then
-    thread_args=(-d message_thread_id="$MESSAGE_THREAD_ID")
+	thread_args=(--data-urlencode "message_thread_id=$MESSAGE_THREAD_ID")
+	document_thread_args=(--form-string "message_thread_id=$MESSAGE_THREAD_ID")
 fi
 
 if [[ -n "${GITHUB_RUN_ID:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
-    RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+	RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 else
-    RUN_URL="https://github.com"
+	RUN_URL="https://github.com"
 fi
 
 html_escape() {
-    local s="$1"
-    s="${s//&/&amp;}"
-    s="${s//</&lt;}"
-    s="${s//>/&gt;}"
-    printf '%s' "$s"
+	printf '%s' "$1" | jq -Rrs '@html'
 }
 
 fmt_elapsed() {
-    printf '%dm %02ds' $(($1 / 60)) $(($1 % 60))
+	local elapsed=$1
+	(( elapsed >= 0 )) || elapsed=0
+	printf '%dm %02ds' "$((elapsed / 60))" "$((elapsed % 60))"
 }
 
 tg_post() {
-    local method="$1"
-    shift
-    curl -s -m 15 -X POST "${API}/${method}" -d chat_id="$CHAT_ID" -d parse_mode="HTML" "$@"
+	local method=$1 response timeout=15
+	local parse_args=()
+	shift
+	case "$method" in
+		sendMessage|editMessageText) parse_args=(--data-urlencode 'parse_mode=HTML') ;;
+	esac
+	[[ "$method" != editMessageText ]] || timeout=10
+	response=$(curl -fsS --connect-timeout 10 --max-time "$timeout" -X POST \
+		"${API}/${method}" --data-urlencode "chat_id=$CHAT_ID" \
+		"${parse_args[@]}" "$@" 2>/dev/null) || return 1
+	if ! printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
+		if [[ "$method" != editMessageText ]] || ! printf '%s' "$response" | \
+			jq -e '.error_code == 400 and (.description // "" | contains("message is not modified"))' > /dev/null 2>&1; then
+			return 1
+		fi
+	fi
+	printf '%s' "$response"
+}
+
+timer_loop() {
+	local id=$1 started=$2 interval=$3 elapsed
+	while true; do
+		sleep "$interval"
+		elapsed=$(fmt_elapsed "$(($(date +%s) - started))")
+		tg_post editMessageText --data-urlencode "message_id=$id" \
+			--data-urlencode "text=<b>- Compiling Kernel</b>
+• Elapsed: ${elapsed}" > /dev/null || true
+	done
 }
 
 commit_id=$(git log -1 --format='%h')
 commit_text=$(git log -1 --format='%s')
+commit_id=$(html_escape "$commit_id")
 commit_text=$(html_escape "${commit_text:0:150}")
+run_url_html=$(html_escape "$RUN_URL")
+keyboard=$(jq -cn --arg url "$RUN_URL" '{inline_keyboard: [[{text: "Compilation", url: $url}]]}')
 start_time=$(date +%s)
 msg_id=""
 timer_pid=""
+build_pid=""
+message_file="${RUNNER_TEMP:-/tmp}/tg_msg_id"
+finished=0
 
-notify_failure() {
-    local reason="$1" text keyboard
-    text="${reason} at $(fmt_elapsed $(($(date +%s) - start_time)))"
-    keyboard="{\"inline_keyboard\":[[{\"text\":\"Compilation\",\"url\":\"${RUN_URL}\"}]]}"
-
-    if [[ -n "$msg_id" ]]; then
-        tg_post editMessageText -d message_id="$msg_id" \
-            --data-urlencode "text=${text}" \
-            --data-urlencode "reply_markup=${keyboard}" > /dev/null 2>&1 || true
-    else
-        tg_post sendMessage "${thread_args[@]}" \
-            --data-urlencode "text=${text}" \
-            --data-urlencode "reply_markup=${keyboard}" > /dev/null 2>&1 || true
-    fi
+stop_group() {
+	local pid=$1
+	if [[ -n "$pid" ]]; then
+		kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	fi
 }
 
-initial_res=$(tg_post sendMessage "${thread_args[@]}" \
-    --data-urlencode "text=<b>- Compiling Kernel</b>
-• Elapsed: 0m 00s" || true)
-
-msg_id=$(printf '%s' "$initial_res" | jq -r '.result.message_id // empty' 2>/dev/null || true)
-
-if [[ -z "$msg_id" ]]; then
-    echo "Warning: could not extract message_id, Telegram API said:" >&2
-    echo "$initial_res" >&2
-else
-    echo "$msg_id" > "${RUNNER_TEMP:-/tmp}/tg_msg_id"
-    (
-        while true; do
-            sleep "$TIMER_INTERVAL"
-            elapsed=$(fmt_elapsed $(($(date +%s) - start_time)))
-            tg_post editMessageText -m 10 -d message_id="$msg_id" \
-                --data-urlencode "text=<b>- Compiling Kernel</b>
-• Elapsed: ${elapsed}" > /dev/null 2>&1 || true
-        done
-    ) &
-    timer_pid=$!
-fi
-
 stop_timer() {
-    if [[ -n "$timer_pid" ]]; then
-        kill "$timer_pid" 2>/dev/null || true
-        wait "$timer_pid" 2>/dev/null || true
-        timer_pid=""
-    fi
+	stop_group "$timer_pid"
+	timer_pid=""
+}
+
+notify_failure() {
+	local reason=$1 text
+	text="${reason} at $(fmt_elapsed "$(($(date +%s) - start_time))")"
+	if [[ -n "$msg_id" ]] && tg_post editMessageText \
+		--data-urlencode "message_id=$msg_id" \
+		--data-urlencode "text=$text" \
+		--data-urlencode "reply_markup=$keyboard" > /dev/null; then
+		return 0
+	fi
+	tg_post sendMessage "${thread_args[@]}" --data-urlencode "text=$text" \
+		--data-urlencode "reply_markup=$keyboard" > /dev/null || true
+}
+
+cleanup() {
+	local status=$?
+	trap - EXIT
+	stop_timer
+	stop_group "$build_pid"
+	exit "$status"
 }
 
 on_interrupt() {
-    stop_timer
-    notify_failure "Compilation Interrupted"
-    exit 1
+	local status=$1
+	trap '' INT TERM
+	stop_timer
+	stop_group "$build_pid"
+	build_pid=""
+	notify_failure "Compilation Interrupted"
+	finished=1
+	exit "$status"
 }
-trap stop_timer EXIT
-trap on_interrupt INT TERM
+
+on_error() {
+	local status=$1
+	trap - ERR
+	stop_timer
+	stop_group "$build_pid"
+	build_pid=""
+	if [[ "$finished" == 0 ]]; then
+		notify_failure "Compilation Failed"
+	fi
+	printf 'Error: bot failed (exit %s).\n' "$status" >&2
+	exit "$status"
+}
+
+trap cleanup EXIT
+trap 'on_error "$?"' ERR
+trap 'on_interrupt 130' INT
+trap 'on_interrupt 143' TERM
+
+declare -A previous_zips=()
+shopt -s nullglob
+for file in Sashimi-*.zip; do
+	if [[ -f "$file" ]]; then
+		previous_zips["$file"]=$(stat -c '%i:%s:%y' -- "$file")
+	fi
+done
+
+if initial_res=$(tg_post sendMessage "${thread_args[@]}" \
+	--data-urlencode 'text=<b>- Compiling Kernel</b>
+• Elapsed: 0m 00s'); then
+	msg_id=$(printf '%s' "$initial_res" | jq -r '.result.message_id | select(type == "number" and . > 0 and . == floor)' 2>/dev/null || true)
+fi
+
+if [[ -n "$msg_id" ]]; then
+	if ! printf '%s\n' "$msg_id" > "$message_file"; then
+		printf 'Warning: could not save Telegram message ID.\n' >&2
+	fi
+	export API CHAT_ID
+	export -f tg_post fmt_elapsed timer_loop
+	setsid "$BASH" -c 'timer_loop "$@"' _ "$msg_id" "$start_time" "$TIMER_INTERVAL" &
+	timer_pid=$!
+else
+	printf 'Warning: Telegram progress notification failed; continuing build.\n' >&2
+fi
 
 export SKIP_UPLOAD=1
+setsid ./sashimi.sh -v bangkk &
+build_pid=$!
+if wait "$build_pid"; then
+	build_status=0
+else
+	build_status=$?
+fi
+build_pid=""
+stop_timer
 
-if ./sashimi.sh -v bangkk; then
-    stop_timer
-    duration=$(fmt_elapsed $(($(date +%s) - start_time)))
+if [[ "$build_status" != 0 ]]; then
+	notify_failure "Compilation Failed"
+	finished=1
+	printf 'Build failed (exit %s).\n' "$build_status" >&2
+	exit "$build_status"
+fi
 
-    if [[ -n "$msg_id" ]]; then
-        tg_post deleteMessage -d message_id="$msg_id" > /dev/null 2>&1 || true
-    fi
+duration=$(fmt_elapsed "$(($(date +%s) - start_time))")
+zip_file=""
+for file in Sashimi-*.zip; do
+	[[ -s "$file" && -f "$file" ]] || continue
+	fingerprint=$(stat -c '%i:%s:%y' -- "$file")
+	[[ "${previous_zips[$file]:-}" != "$fingerprint" ]] || continue
+	if [[ -z "$zip_file" || "$file" -nt "$zip_file" ]]; then
+		zip_file="$file"
+	fi
+done
+shopt -u nullglob
 
-    shopt -s nullglob
-    zips=( Sashimi-*.zip )
-    shopt -u nullglob
+if [[ -z "$zip_file" ]]; then
+	notify_failure "Compilation finished without a new ZIP"
+	finished=1
+	printf 'Error: build succeeded but no new or updated ZIP was found.\n' >&2
+	exit 1
+fi
 
-    if [[ ${#zips[@]} -gt 0 ]]; then
-        zip_file=$(ls -t "${zips[@]}" | head -n 1)
+ksu_status="No"
+susfs_status="No"
+case "$zip_file" in
+	Sashimi-ksu-*) ksu_status="Yes" ;;
+esac
+case "$zip_file" in
+	Sashimi-ksu-susfs-*) susfs_status="Yes" ;;
+esac
 
-        case "$zip_file" in
-            Sashimi-ksu-*) ksu_status="Yes" ;;
-            *) ksu_status="No" ;;
-        esac
-
-        case "$zip_file" in
-            Sashimi-ksu-susfs-*) susfs_status="Yes" ;;
-            *) susfs_status="No" ;;
-        esac
-
-        caption="🍣 Sashimi Kernel (bangkk)
+caption="🍣 Sashimi Kernel (bangkk)
 • Commit: ${commit_id}
 • Message: ${commit_text}
 • ReSukiSU: ${ksu_status}
 • SusFS: ${susfs_status}
-• Duration: ${duration} (<a href=\"${RUN_URL}\">Workflow</a>)"
+• Duration: ${duration} (<a href=\"${run_url_html}\">Workflow</a>)"
 
-        if ! curl -s -f -m 300 --retry 3 --retry-delay 5 \
-            -F chat_id="$CHAT_ID" \
-            -F document=@"$zip_file" \
-            ${MESSAGE_THREAD_ID:+-F message_thread_id="$MESSAGE_THREAD_ID"} \
-            --form-string caption="$caption" \
-            --form-string parse_mode="HTML" \
-            "${API}/sendDocument" > /dev/null; then
-            echo "Warning: build succeeded but Telegram upload failed." >&2
-            tg_post sendMessage "${thread_args[@]}" \
-                --data-urlencode "text=Build succeeded (${zip_file}) but upload to Telegram failed. Check the <a href=\"${RUN_URL}\">workflow</a> artifacts." \
-                > /dev/null 2>&1 || true
-        fi
-    else
-        echo "Warning: Build succeeded but no .zip output was found." >&2
-    fi
-
-    exit 0
-else
-    stop_timer
-    notify_failure "Compilation Failed"
-    echo "Build failed." >&2
-    exit 1
+upload_ok=0
+if upload_res=$(curl -fsS --connect-timeout 15 --max-time 300 \
+	--form-string "chat_id=$CHAT_ID" -F "document=@${zip_file}" \
+	"${document_thread_args[@]}" --form-string "caption=$caption" \
+	--form-string 'parse_mode=HTML' "${API}/sendDocument" 2>/dev/null); then
+	if printf '%s' "$upload_res" | jq -e '.ok == true' > /dev/null 2>&1; then
+		upload_ok=1
+	fi
 fi
+
+if [[ "$upload_ok" != 1 ]]; then
+	printf 'Warning: build succeeded but Telegram upload failed.\n' >&2
+	zip_html=$(html_escape "$zip_file")
+	tg_post sendMessage "${thread_args[@]}" \
+		--data-urlencode "text=Build succeeded (${zip_html}) but upload to Telegram failed. Check the <a href=\"${run_url_html}\">workflow</a> artifacts." > /dev/null || true
+fi
+
+if [[ -n "$msg_id" ]]; then
+	tg_post deleteMessage --data-urlencode "message_id=$msg_id" > /dev/null || true
+	if [[ -f "$message_file" && "$(< "$message_file")" == "$msg_id" ]]; then
+		rm -f -- "$message_file" || true
+	fi
+fi
+
+finished=1
+exit 0
