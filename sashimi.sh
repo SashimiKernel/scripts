@@ -7,9 +7,8 @@
 
 set -euo pipefail
 SECONDS=0
-CLANG_REV="r596125"
-CLANG_VERSION="clang-22.0.2"
-CLANG_URL="https://github.com/Samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz"
+CLANG_VERSION="neutron-clang-24.0.0git-06092026"
+CLANG_URL="https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst"
 GO_UP_URL="${GO_UP_URL:-https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up}"
 TC_DIR="$HOME/tc/$CLANG_VERSION"
 export PATH="$TC_DIR/bin:$PATH"
@@ -46,17 +45,24 @@ if [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
 fi
 
 if ! [ -x "${LLVM_DIR}/clang" ]; then
-	echo "Clang not found! Downloading AOSP Clang..." | tee -a "$LOG_FILE"
+	echo "Clang not found! Downloading Neutron Clang..." | tee -a "$LOG_FILE"
+	if ! command -v zstd &> /dev/null; then
+		echo "ERROR: zstd not found (apt-get install zstd). Aborting..." | tee -a "$LOG_FILE"
+		exit 1
+	fi
 	mkdir -p "$HOME/tc"
 	TC_TMP=$(mktemp -d "$HOME/tc/.dl.XXXXXX")
-	if ! curl -fsSL "$CLANG_URL" | tar -xz -C "$TC_TMP" 2>> "$LOG_FILE"; then
+	if ! curl -fsSL "$CLANG_URL" | tar --zstd -x -C "$TC_TMP" 2>> "$LOG_FILE"; then
 		rm -rf "$TC_TMP"
 		echo "Download failed! Aborting..." | tee -a "$LOG_FILE"
 		exit 1
 	fi
 	TC_SRC="$TC_TMP"
-	if [ -d "${TC_TMP}/clang-${CLANG_REV}/bin" ]; then
-		TC_SRC="${TC_TMP}/clang-${CLANG_REV}"
+	if [ ! -d "${TC_TMP}/bin" ]; then
+		SUB_DIR=$(find "$TC_TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+		if [ -n "$SUB_DIR" ] && [ -d "${SUB_DIR}/bin" ]; then
+			TC_SRC="$SUB_DIR"
+		fi
 	fi
 	rm -rf "$TC_DIR"
 	mkdir -p "$TC_DIR"
