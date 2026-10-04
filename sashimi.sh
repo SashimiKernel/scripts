@@ -57,7 +57,6 @@ if ! [ -x "${LLVM_DIR}/clang" ]; then
 	TC_SRC="$TC_TMP"
 	if [ -d "${TC_TMP}/clang-${CLANG_REV}/bin" ]; then
 		TC_SRC="${TC_TMP}/clang-${CLANG_REV}"
-		fi
 	fi
 	rm -rf "$TC_DIR"
 	mkdir -p "$TC_DIR"
@@ -68,6 +67,7 @@ if ! [ -x "${LLVM_DIR}/clang" ]; then
 		exit 1
 	fi
 	echo "Clang setup completed successfully!" | tee -a "$LOG_FILE"
+fi
 
 if command -v ccache &> /dev/null; then
 	export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
