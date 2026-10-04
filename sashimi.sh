@@ -68,7 +68,8 @@ if ! [ -x "${LLVM_DIR}/clang" ]; then
 		exit 1
 	fi
 	echo "Clang setup completed successfully!" | tee -a "$LOG_FILE"
-
+    fi
+	
 if command -v ccache &> /dev/null; then
 	export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
 	export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-5G}"
