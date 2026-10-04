@@ -2,25 +2,38 @@
 
 ## Files
 
-**`sashimi.sh`** — Compiles the kernel for the `bangkk` variant. Downloads/sets up the Clang toolchain if missing, builds `vendor/bangkk_defconfig`, packages the output (`Image`, `dtb.img`, `dtbo.img`) with AnyKernel3, and produces a flashable zip named `Sashimi[-ksu[-susfs]]-<date>-<time>-bangkk.zip` (`-ksu` is added when `CONFIG_KSU=y` in the final `.config`, and `-susfs` is added after it when `CONFIG_KSU_SUSFS=y`).
+**`sashimi.sh`** — Compiles the kernel for `bangkk`, applying `vendor/bangkk_defconfig` followed by `moto.config`. Validates or downloads the Clang toolchain, checks KernelSU configuration, and packages `Image` plus available DTB/DTBO files with AnyKernel3. Produces `Sashimi[-ksu[-susfs]]-<date>-<time>-bangkk.zip`, with suffixes based on the final `.config`.
+
+Uses temporary packaging directories, prevents concurrent builds in the same directory, and saves build output and errors to `sashimi.log`.
 
 Usage:
+
 ```bash
 ./sashimi.sh -v bangkk
 ```
 
 Optional environment variables:
-- `SKIP_UPLOAD=1` — skip the `go-up` upload after the build.
-- `GO_UP_URL` — where to download `go-up` from (pin it to a commit).
-- `GO_UP_SHA256` — if set, the downloaded `go-up` is verified against this hash.
-- `CCACHE_DIR`, `CCACHE_MAXSIZE` — ccache settings, used when `ccache` is installed.
 
-**`bot.sh`** — Runs `sashimi.sh -v bangkk` and, on success, uploads the resulting zip to a Telegram chat via bot API, with a caption showing commit hash, commit message, ReSukiSU status, SusFS status, and build duration. While building, it shows a live elapsed-time message that is removed on success or replaced with a failure notice.
+- `SKIP_UPLOAD=1` — skip the `go-up` upload.
+- `JOBS`, `MIN_FREE_GB` — build threads and minimum free space (defaults: CPU count and `20` GiB).
+- `CLANG_REV`, `CLANG_VERSION`, `CLANG_URL`, `TC_DIR` — toolchain version, download URL and installation path.
+- `CLANG_SHA256` — verify the downloaded toolchain archive.
+- `AK3_DIR` — local AnyKernel3 template path.
+- `GO_UP_URL`, `GO_UP_SHA256` — uploader URL and checksum; verification also covers cached copies.
+- `CCACHE_DIR`, `CCACHE_MAXSIZE`, `CCACHE_COMPRESS`, `CCACHE_SLOPPINESS` — ccache settings when installed.
+- `KCFLAGS` — additional compiler flags.
+
+**`bot.sh`** — Runs `sashimi.sh -v bangkk` with `SKIP_UPLOAD=1` and uploads the new or updated ZIP to Telegram. The caption includes the commit, message, ReSukiSU/SusFS status, duration and workflow link. Shows elapsed time while building, reports failures, and stops the timer and build processes when interrupted.
+
+Validates Telegram API responses. Upload failures keep a successful build successful; a missing ZIP or failed build returns an error.
 
 Usage:
+
 ```bash
 export BOT_TOKEN=... CHAT_ID=...
 ./bot.sh
 ```
 
-Requires `BOT_TOKEN` and `CHAT_ID` exported in the shell (optionally `MESSAGE_THREAD_ID`). In CI they are passed through the workflow `env`. `TIMER_INTERVAL` (default `10`) sets how often the elapsed-time message is updated, in seconds. Requires `curl` and `jq`.
+Requires exported `BOT_TOKEN` and `CHAT_ID`; `MESSAGE_THREAD_ID` optionally selects a forum topic. `TIMER_INTERVAL` controls progress updates in seconds (default: `10`). In CI, these variables are passed through the workflow `env`.
+
+Run both scripts from the kernel source directory. Requires Bash and standard Linux utilities, including `curl`, `git`, `make`, `tar`, `zip`, `flock`, `sha256sum`, and `jq`/`setsid` for the bot.
