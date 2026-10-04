@@ -125,10 +125,16 @@ if ./sashimi.sh -v bangkk; then
             *) ksu_status="No" ;;
         esac
 
+        case "$zip_file" in
+            Sashimi-ksu-susfs-*) susfs_status="Yes" ;;
+            *) susfs_status="No" ;;
+        esac
+
         caption="🍣 Sashimi Kernel (bangkk)
 • Commit: ${commit_id}
 • Message: ${commit_text}
 • ReSukiSU: ${ksu_status}
+• SusFS: ${susfs_status}
 • Duration: ${duration} (<a href=\"${RUN_URL}\">Workflow</a>)"
 
         if ! curl -s -f -m 300 --retry 3 --retry-delay 5 \
