@@ -5,28 +5,25 @@
 # Copyright (C) 2024 Akari.
 #
 
-set -euo pipefail
+set -Eeuo pipefail
 SECONDS=0
-CLANG_REV="r596125"
-CLANG_VERSION="clang-22.0.2"
-CLANG_URL="https://github.com/Samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz"
+
+CLANG_REV="${CLANG_REV:-r596125}"
+CLANG_VERSION="${CLANG_VERSION:-clang-22.0.2}"
+CLANG_URL="${CLANG_URL:-https://github.com/Samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz}"
 GO_UP_URL="${GO_UP_URL:-https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up}"
-TC_DIR="$HOME/tc/$CLANG_VERSION"
-export PATH="$TC_DIR/bin:$PATH"
-export ARCH=arm64
-export SUBARCH=arm64
-export KBUILD_BUILD_USER=Sashimi
-export KBUILD_BUILD_HOST=Kernel
-export LLVM_DIR="$TC_DIR/bin"
-export LLVM=1
-AK3_DIR="$HOME/AnyKernel3"
-LOG_FILE="sashimi.log"
-MIN_FREE_GB=20
+TC_DIR="${TC_DIR:-$HOME/tc/$CLANG_VERSION}"
+AK3_DIR="${AK3_DIR:-$HOME/AnyKernel3}"
+LOG_FILE="$PWD/sashimi.log"
+MIN_FREE_GB="${MIN_FREE_GB:-20}"
 TC_TMP=""
-: > "$LOG_FILE"
+AK3_WORK=""
+ZIP_TMP=""
+UPLOAD_TMP=""
+LLVM_TOOLS=(clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-size llvm-strip)
 
 log() {
-	printf '%b\n' "$*" | tee -a "$LOG_FILE"
+	printf '%s\n' "$*" | tee -a "$LOG_FILE"
 }
 
 die() {
@@ -35,78 +32,144 @@ die() {
 }
 
 cleanup() {
-	rm -rf AnyKernel3 ${TC_TMP:+"$TC_TMP"}
+	local status=$? path
+	trap - EXIT
+	for path in "$TC_TMP" "$AK3_WORK" "$ZIP_TMP" "$UPLOAD_TMP"; do
+		if [[ -n "$path" ]]; then
+			rm -rf -- "$path" || true
+		fi
+	done
+	exit "$status"
 }
-trap cleanup EXIT
 
-usage() {
-	log "Use: $0 -v {bangkk}"
+on_error() {
+	local status=$1 line=$2
+	trap - ERR
+	log "ERROR: command failed at line $line (exit $status). See $LOG_FILE."
+	exit "$status"
+}
+
+if [[ $# -ne 2 || $1 != "-v" || $2 != "bangkk" ]]; then
+	printf 'Use: %s -v bangkk\n' "$0" >&2
 	exit 1
-}
-
-if [[ $# -ne 2 || $1 != "-v" ]]; then
-	usage
 fi
 
 VARIANT="$2"
-case "$VARIANT" in
-	bangkk) DEFCONFIG="vendor/bangkk_defconfig" ;;
-	*) usage ;;
-esac
+DEFCONFIG="vendor/bangkk_defconfig"
+[[ -f Makefile && -f "arch/arm64/configs/$DEFCONFIG" && -f arch/arm64/configs/moto.config ]] || {
+	printf 'ERROR: run this script from the kernel source directory.\n' >&2
+	exit 1
+}
 
-for tool in curl tar make git zip; do
-	command -v "$tool" > /dev/null || die "$tool not found. Aborting..."
+for tool in curl tar make git zip df awk sed grep cp mv rm mkdir mktemp date nproc tee flock sha256sum dirname chmod; do
+	command -v "$tool" > /dev/null || {
+		printf 'ERROR: %s not found.\n' "$tool" >&2
+		exit 1
+	}
 done
 
-AVAIL_GB=$(df --output=avail -BG . | tail -n 1 | tr -dc '0-9')
-if [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
-	die "only ${AVAIL_GB}G free, need at least ${MIN_FREE_GB}G. Aborting..."
-fi
+exec 9> .sashimi-build.lock
+flock -n 9 || {
+	printf 'ERROR: another build is already running in this directory.\n' >&2
+	exit 1
+}
+
+: > "$LOG_FILE"
+trap cleanup EXIT
+trap 'on_error "$?" "$LINENO"' ERR
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+JOBS="${JOBS:-$(nproc)}"
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "JOBS must be a positive integer."
+[[ "$MIN_FREE_GB" =~ ^(0|[1-9][0-9]*)$ ]] || die "MIN_FREE_GB must be a nonnegative integer."
+AVAIL_KB=$(df -Pk . | awk 'END { print $4 }')
+[[ "$AVAIL_KB" =~ ^[0-9]+$ ]] || die "cannot determine free disk space."
+(( AVAIL_KB >= MIN_FREE_GB * 1024 * 1024 )) || die "only $((AVAIL_KB / 1024 / 1024)) GiB free; need ${MIN_FREE_GB} GiB."
+
+export ARCH=arm64 SUBARCH=arm64 LLVM=1
+export KBUILD_BUILD_USER=Sashimi KBUILD_BUILD_HOST=Kernel
+export LLVM_DIR="$TC_DIR/bin"
+export PATH="$LLVM_DIR:$PATH"
+
+clang_ready() {
+	local tool
+	for tool in "${LLVM_TOOLS[@]}"; do
+		[[ -x "$1/bin/$tool" ]] || return 1
+	done
+}
+
+verify_hash() {
+	local file=$1 expected=$2 actual
+	[[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+	actual=$(sha256sum -- "$file") || return 1
+	actual=${actual%% *}
+	[[ "${actual,,}" == "${expected,,}" ]]
+}
 
 setup_clang() {
-	local src
-	log "Clang not found! Downloading AOSP Clang..."
-	mkdir -p "$HOME/tc"
-	TC_TMP=$(mktemp -d "$HOME/tc/.dl.XXXXXX")
-	if ! curl -fsSL "$CLANG_URL" | tar -xz -C "$TC_TMP" 2>> "$LOG_FILE"; then
-		die "Download failed! Aborting..."
+	local src parent backup
+	parent=$(dirname -- "$TC_DIR")
+	log "Downloading AOSP Clang..."
+	TC_TMP=$(mktemp -d "$parent/.sashimi-clang.XXXXXX")
+	curl -fSL --retry 3 --connect-timeout 30 "$CLANG_URL" -o "$TC_TMP/clang.tar.gz" 2>&1 | tee -a "$LOG_FILE"
+	if [[ -n "${CLANG_SHA256:-}" ]]; then
+		verify_hash "$TC_TMP/clang.tar.gz" "$CLANG_SHA256" || die "Clang SHA256 verification failed."
 	fi
-	src="$TC_TMP"
-	if [ -d "${TC_TMP}/clang-${CLANG_REV}/bin" ]; then
-		src="${TC_TMP}/clang-${CLANG_REV}"
+	mkdir -p "$TC_TMP/extract"
+	tar -xzf "$TC_TMP/clang.tar.gz" -C "$TC_TMP/extract" 2>&1 | tee -a "$LOG_FILE"
+	src="$TC_TMP/extract"
+	if [[ -d "$src/clang-${CLANG_REV}/bin" ]]; then
+		src="$src/clang-${CLANG_REV}"
 	fi
-	rm -rf "$TC_DIR"
-	mkdir -p "$TC_DIR"
-	mv "$src"/* "$TC_DIR"/
-	rm -rf "$TC_TMP"
+	clang_ready "$src" || die "downloaded toolchain is incomplete."
+	if [[ -e "$TC_DIR" || -L "$TC_DIR" ]]; then
+		mv -- "$TC_DIR" "$TC_TMP/previous"
+	fi
+	if ! mv -- "$src" "$TC_DIR"; then
+		if [[ -e "$TC_TMP/previous" || -L "$TC_TMP/previous" ]]; then
+			backup="$TC_TMP/previous"
+			if ! mv -- "$backup" "$TC_DIR"; then
+				TC_TMP=""
+				die "could not restore Clang; previous installation is at $backup."
+			fi
+		fi
+		die "could not install Clang."
+	fi
+	rm -rf -- "$TC_TMP"
 	TC_TMP=""
-	[ -x "${LLVM_DIR}/clang" ] || die "clang still missing after extraction. Aborting..."
 	log "Clang setup completed successfully!"
 }
 
-if ! [ -x "${LLVM_DIR}/clang" ]; then
+mkdir -p "$(dirname -- "$TC_DIR")"
+exec 8> "${TC_DIR}.lock"
+flock 8
+if ! clang_ready "$TC_DIR"; then
 	setup_clang
 fi
+exec 8>&-
 
-if command -v ccache &> /dev/null; then
+if command -v ccache > /dev/null; then
 	export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
 	export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-5G}"
 	export CCACHE_COMPRESS="${CCACHE_COMPRESS:-1}"
 	export CCACHE_SLOPPINESS="${CCACHE_SLOPPINESS:-time_macros,include_file_mtime}"
-	ccache -z > /dev/null
+	ccache -z >> "$LOG_FILE" 2>&1 || log "Warning: could not reset ccache statistics."
 	CC_COMPILER="ccache ${LLVM_DIR}/clang"
 else
 	CC_COMPILER="${LLVM_DIR}/clang"
 fi
 
-log "\nCompiler info:"
-"${LLVM_DIR}/clang" --version | sed -n 1p | tee -a "$LOG_FILE"
-"${LLVM_DIR}/ld.lld" --version | sed -n 1p | tee -a "$LOG_FILE"
-log "\nCompiling for $DEFCONFIG with variant $VARIANT..."
+log ""
+log "Compiler info:"
+"${LLVM_DIR}/clang" --version | sed -n '1p' | tee -a "$LOG_FILE"
+"${LLVM_DIR}/ld.lld" --version | sed -n '1p' | tee -a "$LOG_FILE"
+log ""
+log "Compiling for $DEFCONFIG with variant $VARIANT..."
 
 mkdir -p out
 ARGS=(
-	CC="${CC_COMPILER}"
+	CC="$CC_COMPILER"
 	LD="${LLVM_DIR}/ld.lld"
 	ARCH=arm64
 	AR="${LLVM_DIR}/llvm-ar"
@@ -117,69 +180,103 @@ ARGS=(
 	OBJSIZE="${LLVM_DIR}/llvm-size"
 	STRIP="${LLVM_DIR}/llvm-strip"
 	LLVM=1
-	KCFLAGS="-Wno-implicit-enum-enum-cast"
+	KCFLAGS="${KCFLAGS:+$KCFLAGS }-Wno-implicit-enum-enum-cast"
 )
 
-make "${ARGS[@]}" O=out "$DEFCONFIG" moto.config | tee -a "$LOG_FILE"
+make "${ARGS[@]}" O=out "$DEFCONFIG" moto.config 2>&1 | tee -a "$LOG_FILE"
+[[ -s out/.config ]] || die "out/.config was not generated."
 
 if grep -q '^CONFIG_KSU=y' out/.config && ! grep -qE '^CONFIG_(KSU_SUSFS|KSU_MANUAL_HOOK)=y' out/.config; then
-	die "CONFIG_KSU=y needs CONFIG_KSU_SUSFS=y or CONFIG_KSU_MANUAL_HOOK=y. Aborting..."
+	die "CONFIG_KSU=y needs CONFIG_KSU_SUSFS=y or CONFIG_KSU_MANUAL_HOOK=y."
 fi
 
-make "${ARGS[@]}" O=out -j"$(nproc)" | tee -a "$LOG_FILE"
+make "${ARGS[@]}" O=out -j"$JOBS" 2>&1 | tee -a "$LOG_FILE"
+[[ -s out/arch/arm64/boot/Image ]] || die "Image binary is missing or empty."
 
-[ -e "out/arch/arm64/boot/Image" ] || die "Image binary not found. Compilation failed!"
-
-log "\nKernel compiled successfully for $DEFCONFIG! Zipping up...\n"
-for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE; do
-	log "$(grep -E "^CONFIG_${sym}=" out/.config || echo "CONFIG_${sym} is not set")"
+log ""
+log "Kernel compiled successfully! Packaging..."
+for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE CPU_IDLE_GOV_TEO ARM_QCOM_LPM_CPUIDLE_TEO; do
+	log "$(grep -E "^CONFIG_${sym}=" out/.config || printf 'CONFIG_%s is not set\n' "$sym")"
 done
 
-rm -rf AnyKernel3
-
-if [ -d "$AK3_DIR" ]; then
-	cp -r "$AK3_DIR" AnyKernel3
-	git -C AnyKernel3 checkout -q bangkk
+AK3_WORK=$(mktemp -d "$PWD/.sashimi-ak3.XXXXXX")
+if [[ -d "$AK3_DIR" ]]; then
+	cp -a "$AK3_DIR/." "$AK3_WORK/"
+	if [[ -f "$AK3_WORK/.git" ]]; then
+		rm -f -- "$AK3_WORK/.git"
+		git -C "$AK3_DIR" archive bangkk | tar -xf - -C "$AK3_WORK"
+	elif [[ -d "$AK3_WORK/.git" ]]; then
+		git -C "$AK3_WORK" checkout -q bangkk 2>&1 | tee -a "$LOG_FILE"
+	fi
 else
-	git clone --depth=1 --single-branch -q https://github.com/SashimiKernel/AnyKernel3 -b bangkk AnyKernel3
+	git clone --depth=1 --single-branch -q -b bangkk https://github.com/SashimiKernel/AnyKernel3 "$AK3_WORK" 2>&1 | tee -a "$LOG_FILE"
 fi
 
-cp out/.config AnyKernel3/config
-cp out/arch/arm64/boot/Image AnyKernel3/Image
-[ -f out/arch/arm64/boot/dtb.img ] && cp out/arch/arm64/boot/dtb.img AnyKernel3/dtb
-[ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
+[[ -f "$AK3_WORK/anykernel.sh" ]] || die "AnyKernel3 template has no anykernel.sh."
+rm -f -- "$AK3_WORK/Image" "$AK3_WORK/Image.gz" "$AK3_WORK/Image.gz-dtb" "$AK3_WORK/dtb" "$AK3_WORK/dtbo.img" "$AK3_WORK/config"
+cp out/.config "$AK3_WORK/config"
+cp out/arch/arm64/boot/Image "$AK3_WORK/Image"
+if [[ -s out/arch/arm64/boot/dtb.img ]]; then
+	cp out/arch/arm64/boot/dtb.img "$AK3_WORK/dtb"
+fi
+if [[ -s out/arch/arm64/boot/dtbo.img ]]; then
+	cp out/arch/arm64/boot/dtbo.img "$AK3_WORK/dtbo.img"
+fi
 
 ZIPNAME_PREFIX="Sashimi"
-if grep -q "^CONFIG_KSU=y" out/.config; then
-	ZIPNAME_PREFIX="${ZIPNAME_PREFIX}-ksu"
-	if grep -q "^CONFIG_KSU_SUSFS=y" out/.config; then
-		ZIPNAME_PREFIX="${ZIPNAME_PREFIX}-susfs"
+if grep -q '^CONFIG_KSU=y' out/.config; then
+	ZIPNAME_PREFIX+="-ksu"
+	if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+		ZIPNAME_PREFIX+="-susfs"
 	fi
 fi
-ZIPNAME_PREFIX="${ZIPNAME_PREFIX}-$(date '+%Y%m%d-%H%M')"
+ZIPNAME="${ZIPNAME_PREFIX}-$(date '+%Y%m%d-%H%M')-${VARIANT}.zip"
+ZIP_TMP=$(mktemp -d "$PWD/.sashimi-zip.XXXXXX")
+(
+	cd "$AK3_WORK"
+	zip -r9q "$ZIP_TMP/$ZIPNAME" . -x '.git' '.git/*' '.git*' 'README.md' '*placeholder'
+) 2>&1 | tee -a "$LOG_FILE"
+[[ -s "$ZIP_TMP/$ZIPNAME" ]] || die "ZIP creation failed."
+mv -f -- "$ZIP_TMP/$ZIPNAME" "$PWD/$ZIPNAME"
 
-ZIPNAME="${ZIPNAME_PREFIX}-${VARIANT}.zip"
-(cd AnyKernel3 && zip -r9q "../$ZIPNAME" . -x ".git*" "README.md" "*placeholder")
-
-if command -v ccache &> /dev/null; then
-	log "\nccache statistics:"
-	ccache -s | tee -a "$LOG_FILE"
+if command -v ccache > /dev/null; then
+	log ""
+	log "ccache statistics:"
+	ccache -s 2>&1 | tee -a "$LOG_FILE" || log "Warning: could not read ccache statistics."
 fi
 
-log "\nCompleted compilation for $DEFCONFIG (variant $VARIANT) in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!"
+log ""
+log "Completed in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!"
 log "Zip: $ZIPNAME"
 
-if [ "${SKIP_UPLOAD:-0}" != "1" ]; then
-	if [ ! -f ./go-up ]; then
-		if wget -q "$GO_UP_URL" -O go-up.tmp && [ -s go-up.tmp ] && { [ -z "${GO_UP_SHA256:-}" ] || echo "${GO_UP_SHA256}  go-up.tmp" | sha256sum -c --quiet -; }; then
-			mv go-up.tmp go-up
-			chmod +x go-up
+if [[ "${SKIP_UPLOAD:-0}" != "1" ]]; then
+	UPLOAD_READY=1
+	if [[ ! -s ./go-up ]]; then
+		UPLOAD_TMP=$(mktemp -d "$PWD/.sashimi-upload.XXXXXX")
+		if curl -fSL --retry 3 --connect-timeout 30 "$GO_UP_URL" -o "$UPLOAD_TMP/go-up" >> "$LOG_FILE" 2>&1 && [[ -s "$UPLOAD_TMP/go-up" ]]; then
+			if [[ -n "${GO_UP_SHA256:-}" ]] && ! verify_hash "$UPLOAD_TMP/go-up" "$GO_UP_SHA256"; then
+				UPLOAD_READY=0
+				log "Warning: go-up SHA256 verification failed; skipping upload."
+			else
+				if ! { chmod +x "$UPLOAD_TMP/go-up" && mv -f -- "$UPLOAD_TMP/go-up" ./go-up; }; then
+					UPLOAD_READY=0
+					log "Warning: could not install go-up; skipping upload."
+				fi
+			fi
 		else
-			rm -f go-up.tmp
-			log "Warning: go-up download or verification failed, skipping upload..."
+			UPLOAD_READY=0
+			log "Warning: go-up download failed; skipping upload."
 		fi
 	fi
-	if [ -f ./go-up ]; then
-		./go-up "$ZIPNAME" || log "Warning: go-up upload failed, skipping..."
+	if [[ "$UPLOAD_READY" == "1" && -n "${GO_UP_SHA256:-}" ]] && ! verify_hash ./go-up "$GO_UP_SHA256"; then
+		UPLOAD_READY=0
+		log "Warning: cached go-up SHA256 verification failed; skipping upload."
+	fi
+	if [[ "$UPLOAD_READY" == "1" ]]; then
+		if chmod +x ./go-up; then
+			./go-up "$ZIPNAME" 2>&1 | tee -a "$LOG_FILE" || log "Warning: go-up upload failed."
+		else
+			log "Warning: could not make go-up executable; skipping upload."
+		fi
 	fi
 fi
