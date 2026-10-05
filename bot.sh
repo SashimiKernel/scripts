@@ -276,7 +276,7 @@ esac
 caption="🍣 Sashimi Kernel (bangkk)
 • Commit: ${commit_id}
 • Message: ${commit_text}
-• ReSukiSU: ${ksu_status}
+• BakaSU: ${ksu_status}
 • SusFS: ${susfs_status}
 • Duration: ${duration} (<a href=\"${run_url_html}\">Workflow</a>)"
 

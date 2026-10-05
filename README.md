@@ -23,7 +23,7 @@ Optional environment variables:
 - `CCACHE_DIR`, `CCACHE_MAXSIZE`, `CCACHE_COMPRESS`, `CCACHE_SLOPPINESS` — ccache settings when installed.
 - `KCFLAGS` — additional compiler flags.
 
-**`bot.sh`** — Runs `sashimi.sh -v bangkk` with `SKIP_UPLOAD=1` and uploads the new or updated ZIP to Telegram. The caption includes the commit, message, ReSukiSU/SusFS status, duration and workflow link. Shows elapsed time while building, reports failures, and stops the timer and build processes when interrupted.
+**`bot.sh`** — Runs `sashimi.sh -v bangkk` with `SKIP_UPLOAD=1` and uploads the new or updated ZIP to Telegram. The caption includes the commit, message, BakaSU/SusFS status, duration and workflow link. Shows elapsed time while building, reports failures, and stops the timer and build processes when interrupted.
 
 Validates Telegram API responses. Upload failures keep a successful build successful; a missing ZIP or failed build returns an error.
 
