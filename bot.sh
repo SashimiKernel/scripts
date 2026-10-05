@@ -300,7 +300,7 @@ if [[ "$upload_ok" != 1 ]]; then
 	printf 'Warning: build succeeded but Telegram upload failed.\n' >&2
 	zip_html=$(html_escape "$zip_file")
 	tg_post sendMessage "${thread_args[@]}" \
-		--data-urlencode "text=Build succeeded (${zip_html}) but upload to Telegram failed. Check the <a href=\"${run_url_html}\">workflow</a> artifacts." > /dev/null || true
+		--data-urlencode "text=Build succeeded (${zip_html}) but upload to Telegram failed. Check the <a href=\"${run_url_html}\">workflow</a> logs." > /dev/null || true
 fi
 
 if [[ -n "$msg_id" ]]; then
