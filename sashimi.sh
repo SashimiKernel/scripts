@@ -26,6 +26,14 @@ log() {
 	printf '%s\n' "$*" | tee -a "$LOG_FILE"
 }
 
+set_progress() {
+	[[ -n "${SASHIMI_PROGRESS_FILE:-}" ]] || return 0
+	if ! { printf '%s %s\n' "$1" "$2" > "${SASHIMI_PROGRESS_FILE}.tmp" &&
+		mv -f -- "${SASHIMI_PROGRESS_FILE}.tmp" "$SASHIMI_PROGRESS_FILE"; }; then
+		log "Warning: could not update build progress."
+	fi
+}
+
 die() {
 	log "ERROR: $*"
 	exit 1
@@ -79,6 +87,8 @@ trap cleanup EXIT
 trap 'on_error "$?" "$LINENO"' ERR
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+set_progress 0 preparing
 
 JOBS="${JOBS:-$(nproc)}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "JOBS must be a positive integer."
@@ -141,6 +151,7 @@ setup_clang() {
 	log "Clang setup completed successfully!"
 }
 
+set_progress 0 toolchain
 mkdir -p "$(dirname -- "$TC_DIR")"
 exec 8> "${TC_DIR}.lock"
 flock 8
@@ -183,6 +194,7 @@ ARGS=(
 	KCFLAGS="${KCFLAGS:+$KCFLAGS }-Wno-implicit-enum-enum-cast"
 )
 
+set_progress 20 configuration
 make "${ARGS[@]}" O=out "$DEFCONFIG" moto.config 2>&1 | tee -a "$LOG_FILE"
 [[ -s out/.config ]] || die "out/.config was not generated."
 
@@ -190,11 +202,13 @@ if grep -q '^CONFIG_KSU=y' out/.config && ! grep -qE '^CONFIG_(KSU_SUSFS|KSU_MAN
 	die "CONFIG_KSU=y needs CONFIG_KSU_SUSFS=y or CONFIG_KSU_MANUAL_HOOK=y."
 fi
 
+set_progress 40 compilation
 make "${ARGS[@]}" O=out -j"$JOBS" 2>&1 | tee -a "$LOG_FILE"
 [[ -s out/arch/arm64/boot/Image ]] || die "Image binary is missing or empty."
 
 log ""
 log "Kernel compiled successfully! Packaging..."
+set_progress 80 packaging
 for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE CPU_IDLE_GOV_TEO ARM_QCOM_LPM_CPUIDLE_TEO; do
 	log "$(grep -E "^CONFIG_${sym}=" out/.config || printf 'CONFIG_%s is not set\n' "$sym")"
 done
@@ -238,6 +252,7 @@ ZIP_TMP=$(mktemp -d "$PWD/.sashimi-zip.XXXXXX")
 ) 2>&1 | tee -a "$LOG_FILE"
 [[ -s "$ZIP_TMP/$ZIPNAME" ]] || die "ZIP creation failed."
 mv -f -- "$ZIP_TMP/$ZIPNAME" "$PWD/$ZIPNAME"
+set_progress 100 complete
 
 if command -v ccache > /dev/null; then
 	log ""
