@@ -21,7 +21,7 @@ if [[ -n "$MESSAGE_THREAD_ID" && ! "$MESSAGE_THREAD_ID" =~ ^[1-9][0-9]*$ ]]; the
 	exit 1
 fi
 
-for tool in curl jq git date sleep stat setsid rm; do
+for tool in curl jq git date sleep stat setsid rm mktemp; do
 	command -v "$tool" > /dev/null || {
 		printf 'Error: %s not found.\n' "$tool" >&2
 		exit 1
@@ -77,14 +77,43 @@ tg_post() {
 	printf '%s' "$response"
 }
 
+progress_text() {
+	local started=$1 progress=0 stage=preparing label filled bar="" i elapsed
+	if [[ -r "$SASHIMI_PROGRESS_FILE" ]]; then
+		read -r progress stage < "$SASHIMI_PROGRESS_FILE" || true
+	fi
+	case "$progress" in
+		0|20|40|80|100) ;;
+		*) progress=0 ;;
+	esac
+	case "$stage" in
+		toolchain) label="Toolchain setup" ;;
+		configuration) label="Kernel configuration" ;;
+		compilation) label="Kernel compilation" ;;
+		packaging) label="ZIP packaging" ;;
+		complete) label="Build completed" ;;
+		*) label="Preparing build" ;;
+	esac
+	filled=$((progress / 10))
+	for ((i = 0; i < 10; i++)); do
+		if ((i < filled)); then
+			bar+="🟩"
+		else
+			bar+="⬜"
+		fi
+	done
+	elapsed=$(fmt_elapsed "$(($(date +%s) - started))")
+	printf '<b>- Compiling Kernel</b>\n%s\n• Stage progress: %s%%\n• Stage: %s\n• Elapsed: %s' \
+		"$bar" "$progress" "$label" "$elapsed"
+}
+
 timer_loop() {
-	local id=$1 started=$2 interval=$3 elapsed
+	local id=$1 started=$2 interval=$3 text
 	while true; do
 		sleep "$interval"
-		elapsed=$(fmt_elapsed "$(($(date +%s) - started))")
+		text=$(progress_text "$started")
 		tg_post editMessageText --data-urlencode "message_id=$id" \
-			--data-urlencode "text=<b>- Compiling Kernel</b>
-• Elapsed: ${elapsed}" > /dev/null || true
+			--data-urlencode "text=$text" > /dev/null || true
 	done
 }
 
@@ -100,6 +129,8 @@ timer_pid=""
 build_pid=""
 message_file="${RUNNER_TEMP:-/tmp}/tg_msg_id"
 finished=0
+progress_dir=""
+SASHIMI_PROGRESS_FILE=""
 
 stop_group() {
 	local pid=$1
@@ -132,6 +163,9 @@ cleanup() {
 	trap - EXIT
 	stop_timer
 	stop_group "$build_pid"
+	if [[ -n "$progress_dir" ]]; then
+		rm -rf -- "$progress_dir" || true
+	fi
 	exit "$status"
 }
 
@@ -164,6 +198,10 @@ trap 'on_error "$?"' ERR
 trap 'on_interrupt 130' INT
 trap 'on_interrupt 143' TERM
 
+progress_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/sashimi-progress.XXXXXX")
+export SASHIMI_PROGRESS_FILE="$progress_dir/status"
+printf '0 preparing\n' > "$SASHIMI_PROGRESS_FILE"
+
 declare -A previous_zips=()
 shopt -s nullglob
 for file in Sashimi-*.zip; do
@@ -173,8 +211,7 @@ for file in Sashimi-*.zip; do
 done
 
 if initial_res=$(tg_post sendMessage "${thread_args[@]}" \
-	--data-urlencode 'text=<b>- Compiling Kernel</b>
-• Elapsed: 0m 00s'); then
+	--data-urlencode "text=$(progress_text "$start_time")"); then
 	msg_id=$(printf '%s' "$initial_res" | jq -r '.result.message_id | select(type == "number" and . > 0 and . == floor)' 2>/dev/null || true)
 fi
 
@@ -183,7 +220,7 @@ if [[ -n "$msg_id" ]]; then
 		printf 'Warning: could not save Telegram message ID.\n' >&2
 	fi
 	export API CHAT_ID
-	export -f tg_post fmt_elapsed timer_loop
+	export -f tg_post fmt_elapsed progress_text timer_loop
 	setsid "$BASH" -c 'timer_loop "$@"' _ "$msg_id" "$start_time" "$TIMER_INTERVAL" &
 	timer_pid=$!
 else
@@ -242,6 +279,12 @@ caption="🍣 Sashimi Kernel (bangkk)
 • ReSukiSU: ${ksu_status}
 • SusFS: ${susfs_status}
 • Duration: ${duration} (<a href=\"${run_url_html}\">Workflow</a>)"
+
+if [[ -n "$msg_id" ]]; then
+	tg_post editMessageText --data-urlencode "message_id=$msg_id" \
+		--data-urlencode "text=$(progress_text "$start_time")
+• Uploading ZIP to Telegram..." > /dev/null || true
+fi
 
 upload_ok=0
 if upload_res=$(curl -fsS --connect-timeout 15 --max-time 300 \
