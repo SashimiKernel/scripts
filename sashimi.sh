@@ -69,7 +69,7 @@ DEFCONFIG="vendor/bangkk_defconfig"
 	exit 1
 }
 
-for tool in curl tar make git zip df awk sed grep cp mv rm mkdir mktemp date nproc tee flock sha256sum dirname chmod; do
+for tool in curl tar make git zip df awk sed grep cp mv rm mkdir mktemp date nproc tee flock sha256sum dirname chmod python3; do
 	command -v "$tool" > /dev/null || {
 		printf 'ERROR: %s not found.\n' "$tool" >&2
 		exit 1
@@ -115,6 +115,31 @@ verify_hash() {
 	actual=$(sha256sum -- "$file") || return 1
 	actual=${actual%% *}
 	[[ "${actual,,}" == "${expected,,}" ]]
+}
+
+validate_config() {
+	local option ksu_enabled=false susfs_enabled=false expected_susfs
+	[[ -s out/.config ]] || die "out/.config was not generated."
+	if grep -q '^CONFIG_KSU=y' out/.config; then
+		ksu_enabled=true
+	fi
+	if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+		susfs_enabled=true
+	fi
+	for option in BUILD_KSU BUILD_SUSFS; do
+		[[ -z "${!option:-}" || "${!option}" == true || "${!option}" == false ]] || die "$option must be true or false."
+	done
+	if [[ -n "${BUILD_KSU:-}" && "$ksu_enabled" != "$BUILD_KSU" ]]; then
+		die "final KernelSU configuration does not match BUILD_KSU."
+	fi
+	if [[ -n "${BUILD_SUSFS:-}" ]]; then
+		expected_susfs="$BUILD_SUSFS"
+		[[ "$ksu_enabled" == true ]] || expected_susfs=false
+		[[ "$susfs_enabled" == "$expected_susfs" ]] || die "final SusFS configuration does not match BUILD_SUSFS."
+	fi
+	if [[ "$ksu_enabled" == true ]] && ! grep -qE '^CONFIG_(KSU_SUSFS|KSU_MANUAL_HOOK)=y' out/.config; then
+		die "CONFIG_KSU=y needs CONFIG_KSU_SUSFS=y or CONFIG_KSU_MANUAL_HOOK=y."
+	fi
 }
 
 setup_clang() {
@@ -196,15 +221,12 @@ ARGS=(
 
 set_progress 20 configuration
 make "${ARGS[@]}" O=out "$DEFCONFIG" moto.config 2>&1 | tee -a "$LOG_FILE"
-[[ -s out/.config ]] || die "out/.config was not generated."
-
-if grep -q '^CONFIG_KSU=y' out/.config && ! grep -qE '^CONFIG_(KSU_SUSFS|KSU_MANUAL_HOOK)=y' out/.config; then
-	die "CONFIG_KSU=y needs CONFIG_KSU_SUSFS=y or CONFIG_KSU_MANUAL_HOOK=y."
-fi
+validate_config
 
 set_progress 40 compilation
 make "${ARGS[@]}" O=out -j"$JOBS" 2>&1 | tee -a "$LOG_FILE"
 [[ -s out/arch/arm64/boot/Image ]] || die "Image binary is missing or empty."
+validate_config
 
 log ""
 log "Kernel compiled successfully! Packaging..."
@@ -215,12 +237,10 @@ done
 
 AK3_WORK=$(mktemp -d "$PWD/.sashimi-ak3.XXXXXX")
 if [[ -d "$AK3_DIR" ]]; then
-	cp -a "$AK3_DIR/." "$AK3_WORK/"
-	if [[ -f "$AK3_WORK/.git" ]]; then
-		rm -f -- "$AK3_WORK/.git"
+	if [[ -f "$AK3_DIR/.git" || -d "$AK3_DIR/.git" ]]; then
 		git -C "$AK3_DIR" archive bangkk | tar -xf - -C "$AK3_WORK"
-	elif [[ -d "$AK3_WORK/.git" ]]; then
-		git -C "$AK3_WORK" checkout -q bangkk 2>&1 | tee -a "$LOG_FILE"
+	else
+		cp -a "$AK3_DIR/." "$AK3_WORK/"
 	fi
 else
 	git clone --depth=1 --single-branch -q -b bangkk https://github.com/SashimiKernel/AnyKernel3 "$AK3_WORK" 2>&1 | tee -a "$LOG_FILE"
@@ -251,6 +271,33 @@ ZIP_TMP=$(mktemp -d "$PWD/.sashimi-zip.XXXXXX")
 	zip -r9q "$ZIP_TMP/$ZIPNAME" . -x '.git' '.git/*' '.git*' 'README.md' '*placeholder'
 ) 2>&1 | tee -a "$LOG_FILE"
 [[ -s "$ZIP_TMP/$ZIPNAME" ]] || die "ZIP creation failed."
+python3 - "$ZIP_TMP/$ZIPNAME" <<'PY' 2>&1 | tee -a "$LOG_FILE"
+import hashlib
+import sys
+import zipfile
+from pathlib import Path
+
+boot = Path('out/arch/arm64/boot')
+
+def digest(stream):
+    result = hashlib.sha256()
+    for block in iter(lambda: stream.read(1024 * 1024), b''):
+        result.update(block)
+    return result.digest()
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    if archive.read('config') != Path('out/.config').read_bytes():
+        raise SystemExit('ERROR: packaged configuration does not match the build.')
+    for filename, member in (('Image', 'Image'), ('dtb.img', 'dtb'), ('dtbo.img', 'dtbo.img')):
+        source = boot / filename
+        if not source.is_file() or not source.stat().st_size:
+            if filename == 'Image':
+                raise SystemExit('ERROR: Image binary is missing or empty.')
+            continue
+        with source.open('rb') as original, archive.open(member) as packaged:
+            if digest(original) != digest(packaged):
+                raise SystemExit(f'ERROR: packaged {member} does not match the build.')
+PY
 mv -f -- "$ZIP_TMP/$ZIPNAME" "$PWD/$ZIPNAME"
 set_progress 100 complete
 
@@ -263,6 +310,10 @@ fi
 log ""
 log "Completed in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s)!"
 log "Zip: $ZIPNAME"
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+	printf 'build_success=true\nzip_file=%s\n' "$ZIPNAME" >> "$GITHUB_OUTPUT"
+fi
 
 if [[ "${SKIP_UPLOAD:-0}" != "1" ]]; then
 	UPLOAD_READY=1

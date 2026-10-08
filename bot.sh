@@ -58,23 +58,30 @@ fmt_elapsed() {
 }
 
 tg_post() {
-	local method=$1 response timeout=15
+	local method=$1 response http_code description timeout=15
 	local parse_args=()
 	shift
 	case "$method" in
 		sendMessage|editMessageText) parse_args=(--data-urlencode 'parse_mode=HTML') ;;
 	esac
 	[[ "$method" != editMessageText ]] || timeout=10
-	response=$(curl -fsS --connect-timeout 10 --max-time "$timeout" -X POST \
+	response=$(curl -sS --connect-timeout 10 --max-time "$timeout" -X POST \
 		"${API}/${method}" --data-urlencode "chat_id=$CHAT_ID" \
-		"${parse_args[@]}" "$@" 2>/dev/null) || return 1
-	if ! printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
-		if [[ "$method" != editMessageText ]] || ! printf '%s' "$response" | \
-			jq -e '.error_code == 400 and (.description // "" | contains("message is not modified"))' > /dev/null 2>&1; then
-			return 1
-		fi
+		"${parse_args[@]}" "$@" --write-out '\n%{http_code}' 2>/dev/null) || return 1
+	http_code=${response##*$'\n'}
+	response=${response%$'\n'*}
+	if [[ "$http_code" == 200 ]] && printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
+		printf '%s' "$response"
+		return 0
 	fi
-	printf '%s' "$response"
+	if [[ "$method" == editMessageText && "$http_code" == 400 ]] && printf '%s' "$response" | \
+		jq -e '.error_code == 400 and (.description // "" | contains("message is not modified"))' > /dev/null 2>&1; then
+		printf '%s' "$response"
+		return 0
+	fi
+	description=$(printf '%s' "$response" | jq -r '(.description // "Invalid API response") | tostring | gsub("[\\r\\n]"; " ")' 2>/dev/null) || description="Invalid API response"
+	printf 'Warning: Telegram %s failed (HTTP %s): %.240s\n' "$method" "$http_code" "$description" >&2
+	return 1
 }
 
 progress_text() {
@@ -287,17 +294,27 @@ if [[ -n "$msg_id" ]]; then
 fi
 
 upload_ok=0
-if upload_res=$(curl -fsS --connect-timeout 15 --max-time 300 \
+if upload_res=$(curl -sS --connect-timeout 15 --max-time 300 \
 	--form-string "chat_id=$CHAT_ID" -F "document=@${zip_file}" \
 	"${document_thread_args[@]}" --form-string "caption=$caption" \
-	--form-string 'parse_mode=HTML' "${API}/sendDocument" 2>/dev/null); then
-	if printf '%s' "$upload_res" | jq -e '.ok == true' > /dev/null 2>&1; then
+	--form-string 'parse_mode=HTML' --write-out '\n%{http_code}' "${API}/sendDocument" 2>/dev/null); then
+	upload_http_code=${upload_res##*$'\n'}
+	upload_res=${upload_res%$'\n'*}
+	if [[ "$upload_http_code" == 200 ]] && printf '%s' "$upload_res" | jq -e '.ok == true' > /dev/null 2>&1; then
 		upload_ok=1
 	fi
 fi
 
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+	if [[ "$upload_ok" == 1 ]]; then
+		printf 'telegram_uploaded=true\n' >> "$GITHUB_OUTPUT"
+	else
+		printf 'telegram_uploaded=false\n' >> "$GITHUB_OUTPUT"
+	fi
+fi
+
 if [[ "$upload_ok" != 1 ]]; then
-	printf 'Warning: build succeeded but Telegram upload failed.\n' >&2
+	printf 'Error: build succeeded but Telegram upload failed.\n' >&2
 	zip_html=$(html_escape "$zip_file")
 	tg_post sendMessage "${thread_args[@]}" \
 		--data-urlencode "text=Build succeeded (${zip_html}) but upload to Telegram failed. Check the <a href=\"${run_url_html}\">workflow</a> logs." > /dev/null || true
@@ -311,4 +328,5 @@ if [[ -n "$msg_id" ]]; then
 fi
 
 finished=1
+[[ "$upload_ok" == 1 ]] || exit 1
 exit 0
