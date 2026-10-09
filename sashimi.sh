@@ -253,8 +253,7 @@ if [[ -d "$AK3_WORK/.git" ]]; then
 fi
 
 [[ -f "$AK3_WORK/anykernel.sh" ]] || die "AnyKernel3 template has no anykernel.sh."
-rm -f -- "$AK3_WORK/Image" "$AK3_WORK/Image.gz" "$AK3_WORK/Image.gz-dtb" "$AK3_WORK/dtb" "$AK3_WORK/dtbo.img" "$AK3_WORK/config"
-cp out/.config "$AK3_WORK/config"
+rm -f -- "$AK3_WORK/Image" "$AK3_WORK/Image.gz" "$AK3_WORK/Image.gz-dtb" "$AK3_WORK/dtb" "$AK3_WORK/dtbo.img" "$AK3_WORK/config" "$AK3_WORK/build-info.json"
 cp out/arch/arm64/boot/Image "$AK3_WORK/Image"
 if [[ -s out/arch/arm64/boot/dtb.img ]]; then
 	cp out/arch/arm64/boot/dtb.img "$AK3_WORK/dtb"
@@ -285,7 +284,8 @@ info = {
     'toolchain': json.loads((toolchain / '.sashimi-toolchain.json').read_text()),
     'sha256': {},
 }
-for name in ('config', 'Image', 'dtb', 'dtbo.img'):
+info['sha256']['.config'] = hashlib.sha256(Path('out/.config').read_bytes()).hexdigest()
+for name in ('Image', 'dtb', 'dtbo.img'):
     path = package / name
     if path.is_file():
         with path.open('rb') as stream:
@@ -296,7 +296,7 @@ for name in ('config', 'Image', 'dtb', 'dtbo.img'):
 for path in (helper.parent / 'sashimi.sh', helper.parent / 'bot.sh', helper):
     if path.is_file():
         info['sha256'][path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
-(package / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
+Path('out/build-info.json').write_text(json.dumps(info, indent=2) + '\n')
 print(f"Kernel: {sha} (modified: {dirty})")
 print(f"Scripts: {info['scripts_commit'] or 'local files'}")
 print(f"AnyKernel3: {info['anykernel3_commit'] or 'local files'}")
@@ -313,7 +313,7 @@ ZIPNAME="${ZIPNAME_PREFIX}-$(date '+%Y%m%d-%H%M')-${VARIANT}.zip"
 ZIP_TMP=$(mktemp -d "$PWD/.sashimi-zip.XXXXXX")
 (
 	cd "$AK3_WORK"
-	zip -r9q "$ZIP_TMP/$ZIPNAME" . -x '.git' '.git/*' '.git*' 'README.md' '*placeholder'
+	zip -r9q "$ZIP_TMP/$ZIPNAME" . -x '.git' '.git/*' '.git*' 'README.md' '*placeholder' 'config' 'build-info.json'
 ) 2>&1 | tee -a "$LOG_FILE"
 [[ -s "$ZIP_TMP/$ZIPNAME" ]] || die "ZIP creation failed."
 python3 - "$ZIP_TMP/$ZIPNAME" <<'PY' 2>&1 | tee -a "$LOG_FILE"
@@ -331,8 +331,8 @@ def digest(stream):
     return result.digest()
 
 with zipfile.ZipFile(sys.argv[1]) as archive:
-    if archive.read('config') != Path('out/.config').read_bytes():
-        raise SystemExit('ERROR: packaged configuration does not match the build.')
+    if {'config', 'build-info.json'} & set(archive.namelist()):
+        raise SystemExit('ERROR: build metadata must not be included in the ZIP.')
     for filename, member in (('Image', 'Image'), ('dtb.img', 'dtb'), ('dtbo.img', 'dtbo.img')):
         source = boot / filename
         if not source.is_file() or not source.stat().st_size:

@@ -4,7 +4,7 @@
 
 **`sashimi.sh`** — Compiles the kernel for `bangkk`, applying `vendor/bangkk_defconfig` followed by `moto.config`. Validates or downloads the Clang toolchain, checks KernelSU configuration, and packages `Image` plus available DTB/DTBO files with AnyKernel3. Produces `Sashimi[-ksu[-susfs]]-<date>-<time>-bangkk.zip`, with suffixes based on the final `.config`.
 
-Records source revisions, toolchain identity and checksums in `build-info.json` inside the ZIP. Uses temporary packaging directories, prevents concurrent builds in the same directory, validates the ZIP against the build, and saves output and errors to `sashimi.log`. Local Git AnyKernel3 templates use only tracked files from `bangkk`.
+Records source revisions, toolchain identity and checksums in `out/build-info.json`. The flashable ZIP excludes `config` and `build-info.json`. Uses temporary packaging directories, prevents concurrent builds in the same directory, validates the ZIP against the build, and saves output and errors to `sashimi.log`. Local Git AnyKernel3 templates use only tracked files from `bangkk`.
 
 Usage:
 
