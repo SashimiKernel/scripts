@@ -10,6 +10,7 @@ SECONDS=0
 
 CLANG_REV="${CLANG_REV:-r596125}"
 CLANG_VERSION="${CLANG_VERSION:-clang-22.0.2}"
+TOOLCHAIN_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/toolchain.py"
 CLANG_URL="${CLANG_URL:-https://github.com/Samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz}"
 GO_UP_URL="${GO_UP_URL:-https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up}"
 TC_DIR="${TC_DIR:-$HOME/tc/$CLANG_VERSION}"
@@ -20,7 +21,6 @@ TC_TMP=""
 AK3_WORK=""
 ZIP_TMP=""
 UPLOAD_TMP=""
-LLVM_TOOLS=(clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-size llvm-strip)
 
 log() {
 	printf '%s\n' "$*" | tee -a "$LOG_FILE"
@@ -102,11 +102,11 @@ export KBUILD_BUILD_USER=Sashimi KBUILD_BUILD_HOST=Kernel
 export LLVM_DIR="$TC_DIR/bin"
 export PATH="$LLVM_DIR:$PATH"
 
+export CLANG_REV CLANG_VERSION CLANG_URL
+[[ -f "$TOOLCHAIN_HELPER" ]] || die "toolchain.py not found."
+
 clang_ready() {
-	local tool
-	for tool in "${LLVM_TOOLS[@]}"; do
-		[[ -x "$1/bin/$tool" ]] || return 1
-	done
+	python3 "$TOOLCHAIN_HELPER" check "$1" > /dev/null 2>&1
 }
 
 verify_hash() {
@@ -157,7 +157,7 @@ setup_clang() {
 	if [[ -d "$src/clang-${CLANG_REV}/bin" ]]; then
 		src="$src/clang-${CLANG_REV}"
 	fi
-	clang_ready "$src" || die "downloaded toolchain is incomplete."
+	python3 "$TOOLCHAIN_HELPER" write "$src" "$TC_TMP/clang.tar.gz" 2>&1 | tee -a "$LOG_FILE"
 	if [[ -e "$TC_DIR" || -L "$TC_DIR" ]]; then
 		mv -- "$TC_DIR" "$TC_TMP/previous"
 	fi
@@ -235,15 +235,20 @@ for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE CPU_IDLE_GOV_TEO ARM_QCOM_
 	log "$(grep -E "^CONFIG_${sym}=" out/.config || printf 'CONFIG_%s is not set\n' "$sym")"
 done
 
+AK3_SHA=""
 AK3_WORK=$(mktemp -d "$PWD/.sashimi-ak3.XXXXXX")
 if [[ -d "$AK3_DIR" ]]; then
 	if [[ -f "$AK3_DIR/.git" || -d "$AK3_DIR/.git" ]]; then
-		git -C "$AK3_DIR" archive bangkk | tar -xf - -C "$AK3_WORK"
+		AK3_SHA=$(git -C "$AK3_DIR" rev-parse "bangkk^{commit}")
+		git -C "$AK3_DIR" archive "$AK3_SHA" | tar -xf - -C "$AK3_WORK"
 	else
 		cp -a "$AK3_DIR/." "$AK3_WORK/"
 	fi
 else
 	git clone --depth=1 --single-branch -q -b bangkk https://github.com/SashimiKernel/AnyKernel3 "$AK3_WORK" 2>&1 | tee -a "$LOG_FILE"
+fi
+if [[ -d "$AK3_WORK/.git" ]]; then
+	AK3_SHA=$(git -C "$AK3_WORK" rev-parse HEAD)
 fi
 
 [[ -f "$AK3_WORK/anykernel.sh" ]] || die "AnyKernel3 template has no anykernel.sh."
@@ -256,6 +261,45 @@ fi
 if [[ -s out/arch/arm64/boot/dtbo.img ]]; then
 	cp out/arch/arm64/boot/dtbo.img "$AK3_WORK/dtbo.img"
 fi
+
+export AK3_SHA
+python3 - "$AK3_WORK" "$TC_DIR" "$TOOLCHAIN_HELPER" <<'PYINFO' 2>&1 | tee -a "$LOG_FILE"
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+package, toolchain, helper = map(Path, sys.argv[1:])
+sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], text=True))
+info = {
+    'kernel_commit': sha,
+    'kernel_modified': dirty,
+    'scripts_commit': os.environ.get('SASHIMI_SCRIPTS_SHA') or None,
+    'anykernel3_commit': os.environ.get('AK3_SHA') or None,
+    'ci_commit': os.environ.get('SASHIMI_CI_SHA') or None,
+    'variant': 'bangkk',
+    'toolchain': json.loads((toolchain / '.sashimi-toolchain.json').read_text()),
+    'sha256': {},
+}
+for name in ('config', 'Image', 'dtb', 'dtbo.img'):
+    path = package / name
+    if path.is_file():
+        with path.open('rb') as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+            info['sha256'][name] = digest.hexdigest()
+for path in (helper.parent / 'sashimi.sh', helper.parent / 'bot.sh', helper):
+    if path.is_file():
+        info['sha256'][path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+(package / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
+print(f"Kernel: {sha} (modified: {dirty})")
+print(f"Scripts: {info['scripts_commit'] or 'local files'}")
+print(f"AnyKernel3: {info['anykernel3_commit'] or 'local files'}")
+PYINFO
 
 ZIPNAME_PREFIX="Sashimi"
 if grep -q '^CONFIG_KSU=y' out/.config; then

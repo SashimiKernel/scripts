@@ -57,31 +57,54 @@ fmt_elapsed() {
 	printf '%dm %02ds' "$((elapsed / 60))" "$((elapsed % 60))"
 }
 
+tg_request() {
+	local method=$1 response http_code description retry_after status attempt
+	shift
+	for ((attempt = 0; attempt < 3; attempt++)); do
+		if response=$(curl -sS "$@" --write-out '\n%{http_code}' "${API}/${method}" 2>/dev/null); then
+			status=0
+		else
+			status=$?
+		fi
+		if (( status != 0 )); then
+			printf 'Warning: Telegram %s transport failed (curl %s).\n' "$method" "$status" >&2
+			return 1
+		fi
+		http_code=${response##*$'\n'}
+		response=${response%$'\n'*}
+		if [[ "$http_code" == 200 ]] && printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
+			printf '%s' "$response"
+			return 0
+		fi
+		if [[ "$method" == editMessageText && "$http_code" == 400 ]] && printf '%s' "$response" | \
+			jq -e '.error_code == 400 and (.description // "" | contains("message is not modified"))' > /dev/null 2>&1; then
+			printf '%s' "$response"
+			return 0
+		fi
+		retry_after=$(printf '%s' "$response" | jq -r '.parameters.retry_after // empty' 2>/dev/null) || retry_after=""
+		if [[ "$http_code" == 429 && "$retry_after" =~ ^[1-9][0-9]*$ ]] && (( ${#retry_after} <= 2 && 10#$retry_after <= 60 && attempt < 2 )); then
+			printf 'Warning: Telegram %s rate limited; retrying in %s seconds.\n' "$method" "$retry_after" >&2
+			sleep "$retry_after"
+			continue
+		fi
+		description=$(printf '%s' "$response" | jq -r '(.description // "Invalid API response") | tostring | gsub("[\\r\\n]"; " ")' 2>/dev/null) || description="Invalid API response"
+		description=${description//"$BOT_TOKEN"/'[redacted]'}
+		printf 'Warning: Telegram %s failed (HTTP %s): %.240s\n' "$method" "$http_code" "$description" >&2
+		return 1
+	done
+	return 1
+}
+
 tg_post() {
-	local method=$1 response http_code description timeout=15
+	local method=$1 timeout=15
 	local parse_args=()
 	shift
 	case "$method" in
 		sendMessage|editMessageText) parse_args=(--data-urlencode 'parse_mode=HTML') ;;
 	esac
 	[[ "$method" != editMessageText ]] || timeout=10
-	response=$(curl -sS --connect-timeout 10 --max-time "$timeout" -X POST \
-		"${API}/${method}" --data-urlencode "chat_id=$CHAT_ID" \
-		"${parse_args[@]}" "$@" --write-out '\n%{http_code}' 2>/dev/null) || return 1
-	http_code=${response##*$'\n'}
-	response=${response%$'\n'*}
-	if [[ "$http_code" == 200 ]] && printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
-		printf '%s' "$response"
-		return 0
-	fi
-	if [[ "$method" == editMessageText && "$http_code" == 400 ]] && printf '%s' "$response" | \
-		jq -e '.error_code == 400 and (.description // "" | contains("message is not modified"))' > /dev/null 2>&1; then
-		printf '%s' "$response"
-		return 0
-	fi
-	description=$(printf '%s' "$response" | jq -r '(.description // "Invalid API response") | tostring | gsub("[\\r\\n]"; " ")' 2>/dev/null) || description="Invalid API response"
-	printf 'Warning: Telegram %s failed (HTTP %s): %.240s\n' "$method" "$http_code" "$description" >&2
-	return 1
+	tg_request "$method" --connect-timeout 10 --max-time "$timeout" -X POST \
+		--data-urlencode "chat_id=$CHAT_ID" "${parse_args[@]}" "$@"
 }
 
 progress_text() {
@@ -226,8 +249,8 @@ if [[ -n "$msg_id" ]]; then
 	if ! printf '%s\n' "$msg_id" > "$message_file"; then
 		printf 'Warning: could not save Telegram message ID.\n' >&2
 	fi
-	export API CHAT_ID
-	export -f tg_post fmt_elapsed progress_text timer_loop
+	export API BOT_TOKEN CHAT_ID
+	export -f tg_request tg_post fmt_elapsed progress_text timer_loop
 	setsid "$BASH" -c 'timer_loop "$@"' _ "$msg_id" "$start_time" "$TIMER_INTERVAL" &
 	timer_pid=$!
 else
@@ -294,15 +317,11 @@ if [[ -n "$msg_id" ]]; then
 fi
 
 upload_ok=0
-if upload_res=$(curl -sS --connect-timeout 15 --max-time 300 \
+if tg_request sendDocument --connect-timeout 15 --max-time 300 \
 	--form-string "chat_id=$CHAT_ID" -F "document=@${zip_file}" \
 	"${document_thread_args[@]}" --form-string "caption=$caption" \
-	--form-string 'parse_mode=HTML' --write-out '\n%{http_code}' "${API}/sendDocument" 2>/dev/null); then
-	upload_http_code=${upload_res##*$'\n'}
-	upload_res=${upload_res%$'\n'*}
-	if [[ "$upload_http_code" == 200 ]] && printf '%s' "$upload_res" | jq -e '.ok == true' > /dev/null 2>&1; then
-		upload_ok=1
-	fi
+	--form-string 'parse_mode=HTML' > /dev/null; then
+	upload_ok=1
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
