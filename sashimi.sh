@@ -28,7 +28,7 @@ log() {
 
 set_progress() {
 	[[ -n "${SASHIMI_PROGRESS_FILE:-}" ]] || return 0
-	if ! { printf '%s %s\n' "$1" "$2" > "${SASHIMI_PROGRESS_FILE}.tmp" &&
+	if ! { printf '%s %s %s\n' "$1" "$2" "$(date +%s)" > "${SASHIMI_PROGRESS_FILE}.tmp" &&
 		mv -f -- "${SASHIMI_PROGRESS_FILE}.tmp" "$SASHIMI_PROGRESS_FILE"; }; then
 		log "Warning: could not update build progress."
 	fi
@@ -223,6 +223,7 @@ set_progress 20 configuration
 make "${ARGS[@]}" O=out "$DEFCONFIG" moto.config 2>&1 | tee -a "$LOG_FILE"
 validate_config
 
+log "Compiling kernel..."
 set_progress 40 compilation
 make "${ARGS[@]}" O=out -j"$JOBS" 2>&1 | tee -a "$LOG_FILE"
 [[ -s out/arch/arm64/boot/Image ]] || die "Image binary is missing or empty."

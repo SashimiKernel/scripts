@@ -24,7 +24,7 @@ Optional environment variables:
 - `KCFLAGS` — additional compiler flags.
 - `BUILD_KSU`, `BUILD_SUSFS` — optional `true`/`false` values checked against the final configuration before compiling.
 
-**`bot.sh`** — Runs `sashimi.sh -v bangkk` with `SKIP_UPLOAD=1` and uploads the new or updated ZIP to Telegram. The caption includes the commit, message, BakaSU/SusFS status, duration and workflow link. Shows elapsed time while building, reports failures, and stops the timer and build processes when interrupted.
+**`bot.sh`** — Runs `sashimi.sh -v bangkk` with `SKIP_UPLOAD=1` and uploads the new or updated ZIP to Telegram. The caption includes the commit, message, BakaSU/SusFS status, duration and workflow link. Shows a continuous text bar for four build stages, animated activity, stage/total elapsed time and Kbuild actions started, and detects linking, BTF and Image generation from build output. The bar tracks stages, without estimating a compilation percentage. Reports failures, and stops the timer and build processes when interrupted.
 
 Validates Telegram responses, including unchanged messages, and reports upload errors. Respects `retry_after` for up to two retries of at most 60 seconds each. A failed build, missing ZIP or upload failure returns an error. In CI, validated builds can still be released when Telegram delivery fails.
 
@@ -35,6 +35,6 @@ export BOT_TOKEN=... CHAT_ID=...
 ./bot.sh
 ```
 
-Requires exported `BOT_TOKEN` and `CHAT_ID`; `MESSAGE_THREAD_ID` optionally selects a forum topic. `TIMER_INTERVAL` controls progress updates in seconds (default: `10`). In CI, these variables are passed through the workflow `env`.
+Requires exported `BOT_TOKEN` and `CHAT_ID`; `MESSAGE_THREAD_ID` optionally selects a forum topic. `TIMER_INTERVAL` controls progress updates in seconds (default: `10`). `PROGRESS_BAR_STYLE` selects `blocks` (default, `█▒░`) or pure `ascii` (`#=-`). In CI, these variables are passed through the workflow `env`.
 
-Keep `toolchain.py` beside the scripts. Toolchain reuse requires a matching revision, URL, version and optional checksum. Run both scripts from the kernel source directory. Requires Bash, Python 3 and standard Linux utilities, including `curl`, `git`, `make`, `tar`, `zip`, `flock`, `sha256sum`, and `jq`/`setsid` for the bot.
+Keep `toolchain.py` beside the scripts. Toolchain reuse requires a matching revision, URL, version and optional checksum. Run both scripts from the kernel source directory. Requires Bash, Python 3 and standard Linux utilities, including `curl`, `git`, `make`, `tar`, `zip`, `flock`, `sha256sum`, and `awk`/`jq`/`setsid` for the bot.

@@ -6,6 +6,12 @@ BOT_TOKEN="${BOT_TOKEN:-}"
 CHAT_ID="${CHAT_ID:-}"
 MESSAGE_THREAD_ID="${MESSAGE_THREAD_ID:-}"
 TIMER_INTERVAL="${TIMER_INTERVAL:-10}"
+PROGRESS_BAR_STYLE="${PROGRESS_BAR_STYLE:-blocks}"
+
+case "$PROGRESS_BAR_STYLE" in
+	blocks|ascii) ;;
+	*) printf 'Error: PROGRESS_BAR_STYLE must be blocks or ascii.\n' >&2; exit 1 ;;
+esac
 
 if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" ]]; then
 	printf 'Error: BOT_TOKEN or CHAT_ID not set.\n' >&2
@@ -21,7 +27,7 @@ if [[ -n "$MESSAGE_THREAD_ID" && ! "$MESSAGE_THREAD_ID" =~ ^[1-9][0-9]*$ ]]; the
 	exit 1
 fi
 
-for tool in curl jq git date sleep stat setsid rm mktemp; do
+for tool in curl jq git date sleep stat setsid rm mktemp awk; do
 	command -v "$tool" > /dev/null || {
 		printf 'Error: %s not found.\n' "$tool" >&2
 		exit 1
@@ -108,40 +114,80 @@ tg_post() {
 }
 
 progress_text() {
-	local started=$1 progress=0 stage=preparing label filled bar="" i elapsed
-	if [[ -r "$SASHIMI_PROGRESS_FILE" ]]; then
-		read -r progress stage < "$SASHIMI_PROGRESS_FILE" || true
+	local started=$1 interval=${2:-${TIMER_INTERVAL:-10}} progress=0 stage=preparing stage_started=""
+	local label step=0 completed=0 bar="[" i now elapsed phase_elapsed actions=0 activity=objects frame elapsed_seconds
+	local done_block="███" active_block="▒▒▒" pending_block="░░░" title="Build in progress"
+	if [[ "${PROGRESS_BAR_STYLE:-blocks}" == ascii ]]; then
+		done_block="###"; active_block="==="; pending_block="---"
 	fi
-	case "$progress" in
-		0|20|40|80|100) ;;
-		*) progress=0 ;;
-	esac
+	local frames=('|' '/' '-' '\')
+	if [[ -r "$SASHIMI_PROGRESS_FILE" ]]; then
+		read -r progress stage stage_started < "$SASHIMI_PROGRESS_FILE" || true
+	fi
 	case "$stage" in
-		toolchain) label="Toolchain setup" ;;
-		configuration) label="Kernel configuration" ;;
-		compilation) label="Kernel compilation" ;;
-		packaging) label="ZIP packaging" ;;
-		complete) label="Build completed" ;;
-		*) label="Preparing build" ;;
+		toolchain) label="Toolchain setup"; step=1 ;;
+		configuration) label="Kernel configuration"; step=2 ;;
+		compilation) label="Kernel compilation"; step=3 ;;
+		packaging) label="ZIP packaging"; step=4 ;;
+		complete) label="Build completed"; step=4; completed=4 ;;
+		*) label="Preparing build"; stage=preparing ;;
 	esac
-	filled=$((progress / 10))
-	for ((i = 0; i < 10; i++)); do
-		if ((i < filled)); then
-			bar+="🟩"
+	if [[ "$stage" != complete ]] && ((step > 0)); then
+		completed=$((step - 1))
+	fi
+	now=$(date +%s)
+	elapsed_seconds=$((now - started))
+	((elapsed_seconds >= 0)) || elapsed_seconds=0
+	elapsed=$(fmt_elapsed "$elapsed_seconds")
+	[[ "$stage_started" =~ ^[0-9]{1,10}$ ]] || stage_started=$started
+	phase_elapsed=$(fmt_elapsed "$((now - 10#$stage_started))")
+	frame=${frames[$((elapsed_seconds / interval % ${#frames[@]}))]}
+	for ((i = 1; i <= 4; i++)); do
+		if ((i <= completed)); then
+			bar+="$done_block"
+		elif ((i == step)); then
+			bar+="$active_block"
 		else
-			bar+="⬜"
+			bar+="$pending_block"
 		fi
 	done
-	elapsed=$(fmt_elapsed "$(($(date +%s) - started))")
-	printf '<b>- Compiling Kernel</b>\n%s\n• Stage progress: %s%%\n• Stage: %s\n• Elapsed: %s' \
-		"$bar" "$progress" "$label" "$elapsed"
+	bar+="]"
+	if [[ "$stage" == compilation && -r "${SASHIMI_LOG_FILE:-}" ]]; then
+		read -r actions activity < <(awk '
+			/^Compiling kernel\.\.\.$/ { active = 1; next }
+			active && $1 ~ /^(CC|AS|HOSTCC|HOSTCXX|DTC|AR|LD|LTO|MODPOST|BTF|OBJCOPY|GEN)$/ {
+				actions++
+				if (($1 == "LD" || $1 == "LTO") && $NF ~ /(^|\/)vmlinux(\.o)?$/)
+					activity = "linking"
+				else if ($1 == "BTF") activity = "btf"
+				else if ($1 == "OBJCOPY" && $NF ~ /(^|\/)Image$/) activity = "image"
+			}
+			END { print actions + 0, activity ? activity : "objects" }
+		' "$SASHIMI_LOG_FILE") || true
+		case "$activity" in
+			linking) label="Linking vmlinux" ;;
+			btf) label="Generating BTF" ;;
+			image) label="Generating kernel Image" ;;
+		esac
+	fi
+	[[ "$stage" != complete ]] || title="Build completed"
+	printf -- '<b>%s - Sashimi Kernel (bangkk)</b>\nProgress: <code>%s</code>\n- Completed stages: %s/4\n' "$title" "$bar" "$completed"
+	if [[ "$stage" == complete ]]; then
+		printf -- '- Stage: %s\n' "$label"
+	else
+		printf -- '- Stage: %s %s\n- Time in stage: %s\n' "$frame" "$label" "$phase_elapsed"
+	fi
+	if [[ "$stage" == compilation && "$actions" =~ ^[0-9]+$ ]] && ((actions > 0)); then
+		printf -- '- Build actions started: %s\n' "$actions"
+	fi
+	printf -- '- Elapsed: %s' "$elapsed"
 }
 
 timer_loop() {
 	local id=$1 started=$2 interval=$3 text
 	while true; do
 		sleep "$interval"
-		text=$(progress_text "$started")
+		text=$(progress_text "$started" "$interval")
 		tg_post editMessageText --data-urlencode "message_id=$id" \
 			--data-urlencode "text=$text" > /dev/null || true
 	done
@@ -230,7 +276,8 @@ trap 'on_interrupt 143' TERM
 
 progress_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/sashimi-progress.XXXXXX")
 export SASHIMI_PROGRESS_FILE="$progress_dir/status"
-printf '0 preparing\n' > "$SASHIMI_PROGRESS_FILE"
+export SASHIMI_LOG_FILE="$PWD/sashimi.log"
+printf '0 preparing %s\n' "$start_time" > "$SASHIMI_PROGRESS_FILE"
 
 declare -A previous_zips=()
 shopt -s nullglob
@@ -249,7 +296,7 @@ if [[ -n "$msg_id" ]]; then
 	if ! printf '%s\n' "$msg_id" > "$message_file"; then
 		printf 'Warning: could not save Telegram message ID.\n' >&2
 	fi
-	export API BOT_TOKEN CHAT_ID
+	export API BOT_TOKEN CHAT_ID PROGRESS_BAR_STYLE
 	export -f tg_request tg_post fmt_elapsed progress_text timer_loop
 	setsid "$BASH" -c 'timer_loop "$@"' _ "$msg_id" "$start_time" "$TIMER_INTERVAL" &
 	timer_pid=$!
@@ -313,7 +360,7 @@ caption="🍣 Sashimi Kernel (bangkk)
 if [[ -n "$msg_id" ]]; then
 	tg_post editMessageText --data-urlencode "message_id=$msg_id" \
 		--data-urlencode "text=$(progress_text "$start_time")
-• Uploading ZIP to Telegram..." > /dev/null || true
+- Uploading ZIP to Telegram..." > /dev/null || true
 fi
 
 upload_ok=0
