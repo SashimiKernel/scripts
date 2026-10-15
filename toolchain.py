@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 TOOLS = ('clang', 'ld.lld', 'llvm-ar', 'llvm-nm', 'llvm-objcopy',
-         'llvm-objdump', 'llvm-readelf', 'llvm-size', 'llvm-strip')
+         'llvm-objdump', 'llvm-readelf', 'llvm-strip')
 RECEIPT = '.sashimi-toolchain.json'
 
 
@@ -27,8 +27,10 @@ def identity():
 
 
 def tools_ready(directory):
-    if not all(os.access(directory / 'bin' / tool, os.X_OK) for tool in TOOLS):
-        raise ValueError('Toolchain is incomplete.')
+    missing = [tool for tool in TOOLS
+               if not os.access(directory / 'bin' / tool, os.X_OK)]
+    if missing:
+        raise ValueError('Toolchain is incomplete; missing or not executable: ' + ', '.join(missing))
     versions = {}
     for tool in ('clang', 'ld.lld'):
         result = subprocess.run([str(directory / 'bin' / tool), '--version'],

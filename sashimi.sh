@@ -157,7 +157,7 @@ setup_clang() {
 		verify_hash "$TC_TMP/clang.tar" "$CLANG_SHA256" || die "Clang SHA256 verification failed."
 	fi
 	mkdir -p "$TC_TMP/extract"
-	tar -xf "$TC_TMP/clang.tar" -C "$TC_TMP/extract" 2>&1 | tee -a "$LOG_FILE"
+	tar --no-same-owner -xf "$TC_TMP/clang.tar" -C "$TC_TMP/extract" 2>&1 | tee -a "$LOG_FILE"
 	src="$TC_TMP/extract"
 	if [[ -d "$src/clang-${CLANG_REV}/bin" ]]; then
 		src="$src/clang-${CLANG_REV}"
@@ -190,6 +190,12 @@ if ! clang_ready "$TC_DIR"; then
 fi
 exec 8>&-
 
+OBJSIZE_TOOL="$LLVM_DIR/llvm-size"
+if [[ ! -x "$OBJSIZE_TOOL" ]]; then
+	OBJSIZE_TOOL=$(command -v size) || die "llvm-size is not included; install GNU binutils for the size command."
+	log "llvm-size is not included; using $OBJSIZE_TOOL."
+fi
+
 if command -v ccache > /dev/null; then
 	export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
 	export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-5G}"
@@ -218,7 +224,7 @@ ARGS=(
 	OBJCOPY="${LLVM_DIR}/llvm-objcopy"
 	OBJDUMP="${LLVM_DIR}/llvm-objdump"
 	READELF="${LLVM_DIR}/llvm-readelf"
-	OBJSIZE="${LLVM_DIR}/llvm-size"
+	OBJSIZE="$OBJSIZE_TOOL"
 	STRIP="${LLVM_DIR}/llvm-strip"
 	LLVM=1
 	KCFLAGS="${KCFLAGS:+$KCFLAGS }-Wno-implicit-enum-enum-cast"
