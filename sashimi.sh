@@ -8,10 +8,10 @@
 set -Eeuo pipefail
 SECONDS=0
 
-CLANG_REV="${CLANG_REV:-r596125}"
-CLANG_VERSION="${CLANG_VERSION:-clang-22.0.2}"
+CLANG_REV="${CLANG_REV:-06092026}"
+CLANG_VERSION="${CLANG_VERSION:-neutron-clang-24-06092026}"
 TOOLCHAIN_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/toolchain.py"
-CLANG_URL="${CLANG_URL:-https://github.com/Samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz}"
+CLANG_URL="${CLANG_URL:-https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${CLANG_REV}/neutron-clang-${CLANG_REV}.tar.zst}"
 GO_UP_URL="${GO_UP_URL:-https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up}"
 TC_DIR="${TC_DIR:-$HOME/tc/$CLANG_VERSION}"
 AK3_DIR="${AK3_DIR:-$HOME/AnyKernel3}"
@@ -145,19 +145,24 @@ validate_config() {
 setup_clang() {
 	local src parent backup
 	parent=$(dirname -- "$TC_DIR")
-	log "Downloading AOSP Clang..."
+	case "${CLANG_URL%%\?*}" in
+		*.tar.zst|*.tzst)
+			command -v zstd > /dev/null || die "zstd not found; install it to extract the Neutron Clang archive."
+			;;
+	esac
+	log "Downloading Clang ($CLANG_VERSION)..."
 	TC_TMP=$(mktemp -d "$parent/.sashimi-clang.XXXXXX")
-	curl -fSL --retry 3 --connect-timeout 30 "$CLANG_URL" -o "$TC_TMP/clang.tar.gz" 2>&1 | tee -a "$LOG_FILE"
+	curl -fSL --retry 3 --connect-timeout 30 "$CLANG_URL" -o "$TC_TMP/clang.tar" 2>&1 | tee -a "$LOG_FILE"
 	if [[ -n "${CLANG_SHA256:-}" ]]; then
-		verify_hash "$TC_TMP/clang.tar.gz" "$CLANG_SHA256" || die "Clang SHA256 verification failed."
+		verify_hash "$TC_TMP/clang.tar" "$CLANG_SHA256" || die "Clang SHA256 verification failed."
 	fi
 	mkdir -p "$TC_TMP/extract"
-	tar -xzf "$TC_TMP/clang.tar.gz" -C "$TC_TMP/extract" 2>&1 | tee -a "$LOG_FILE"
+	tar -xf "$TC_TMP/clang.tar" -C "$TC_TMP/extract" 2>&1 | tee -a "$LOG_FILE"
 	src="$TC_TMP/extract"
 	if [[ -d "$src/clang-${CLANG_REV}/bin" ]]; then
 		src="$src/clang-${CLANG_REV}"
 	fi
-	python3 "$TOOLCHAIN_HELPER" write "$src" "$TC_TMP/clang.tar.gz" 2>&1 | tee -a "$LOG_FILE"
+	python3 "$TOOLCHAIN_HELPER" write "$src" "$TC_TMP/clang.tar" 2>&1 | tee -a "$LOG_FILE"
 	if [[ -e "$TC_DIR" || -L "$TC_DIR" ]]; then
 		mv -- "$TC_DIR" "$TC_TMP/previous"
 	fi

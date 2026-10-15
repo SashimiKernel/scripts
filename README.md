@@ -2,7 +2,7 @@
 
 ## Files
 
-**`sashimi.sh`** — Compiles the kernel for `bangkk`, applying `vendor/bangkk_defconfig` followed by `moto.config`. Validates or downloads the Clang toolchain, checks KernelSU configuration, and packages `Image` plus available DTB/DTBO files with AnyKernel3. Produces `Sashimi[-ksu[-susfs]]-<date>-<time>-bangkk.zip`, with suffixes based on the final `.config`.
+**`sashimi.sh`** — Compiles the kernel for `bangkk`, applying `vendor/bangkk_defconfig` followed by `moto.config`. Validates or downloads Neutron Clang 24 (build `06092026`), checks KernelSU configuration, and packages `Image` plus available DTB/DTBO files with AnyKernel3. Produces `Sashimi[-ksu[-susfs]]-<date>-<time>-bangkk.zip`, with suffixes based on the final `.config`.
 
 Records source revisions, toolchain identity and checksums in `out/build-info.json`. The flashable ZIP excludes `config` and `build-info.json`. Uses temporary packaging directories, prevents concurrent builds in the same directory, validates the ZIP against the build, and saves output and errors to `sashimi.log`. Local Git AnyKernel3 templates use only tracked files from `bangkk`.
 
@@ -16,7 +16,8 @@ Optional environment variables:
 
 - `SKIP_UPLOAD=1` — skip the `go-up` upload.
 - `JOBS`, `MIN_FREE_GB` — build threads and minimum free space (defaults: CPU count and `20` GiB).
-- `CLANG_REV`, `CLANG_VERSION`, `CLANG_URL`, `TC_DIR` — toolchain version, download URL and installation path.
+- `CLANG_REV`, `CLANG_VERSION`, `CLANG_URL`, `TC_DIR` — toolchain version, download URL and installation path. Defaults to Neutron build `06092026`, identity `neutron-clang-24-06092026`, and `$HOME/tc/neutron-clang-24-06092026`.
+- Default archive: https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
 - `CLANG_SHA256` — verify the downloaded toolchain archive.
 - `AK3_DIR` — local AnyKernel3 template path.
 - `GO_UP_URL`, `GO_UP_SHA256` — uploader URL and checksum; verification also covers cached copies.
@@ -37,4 +38,4 @@ export BOT_TOKEN=... CHAT_ID=...
 
 Requires exported `BOT_TOKEN` and `CHAT_ID`; `MESSAGE_THREAD_ID` optionally selects a forum topic. `TIMER_INTERVAL` controls progress updates in seconds (default: `10`). `PROGRESS_BAR_STYLE` selects `blocks` (default, `█▒░`) or pure `ascii` (`#=-`). In CI, these variables are passed through the workflow `env`.
 
-Keep `toolchain.py` beside the scripts. Toolchain reuse requires a matching revision, URL, version and optional checksum. Run both scripts from the kernel source directory. Requires Bash, Python 3 and standard Linux utilities, including `curl`, `git`, `make`, `tar`, `zip`, `flock`, `sha256sum`, and `awk`/`jq`/`setsid` for the bot.
+Keep `toolchain.py` beside the scripts. Toolchain reuse requires a matching revision, URL, version and optional checksum. Run both scripts from the kernel source directory. Requires Bash, Python 3 and standard Linux utilities, including `curl`, `git`, `make`, `tar` (with compression auto-detection), `zstd` (for `.tar.zst` archives), `zip`, `flock`, `sha256sum`, and `awk`/`jq`/`setsid` for the bot.
