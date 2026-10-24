@@ -2,6 +2,10 @@
 
 set -Eeuo pipefail
 
+export CLANG_REV="${CLANG_REV:-r596125}"
+export CLANG_VERSION="${CLANG_VERSION:-clang-22.0.2}"
+export CLANG_URL="${CLANG_URL:-https://github.com/samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz}"
+
 BOT_TOKEN="${BOT_TOKEN:-}"
 CHAT_ID="${CHAT_ID:-}"
 MESSAGE_THREAD_ID="${MESSAGE_THREAD_ID:-}"

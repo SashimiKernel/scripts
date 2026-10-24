@@ -8,10 +8,10 @@
 set -Eeuo pipefail
 SECONDS=0
 
-CLANG_REV="${CLANG_REV:-06092026}"
-CLANG_VERSION="${CLANG_VERSION:-neutron-clang-24-06092026}"
+CLANG_REV="${CLANG_REV:-r596125}"
+CLANG_VERSION="${CLANG_VERSION:-clang-22.0.2}"
 TOOLCHAIN_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/toolchain.py"
-CLANG_URL="${CLANG_URL:-https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${CLANG_REV}/neutron-clang-${CLANG_REV}.tar.zst}"
+CLANG_URL="${CLANG_URL:-https://github.com/samw662/aosp-clang-toolchains/releases/download/clang-22/clang-${CLANG_REV}.tar.gz}"
 GO_UP_URL="${GO_UP_URL:-https://raw.githubusercontent.com/GustavoMends/go-up/master/go-up}"
 TC_DIR="${TC_DIR:-$HOME/tc/$CLANG_VERSION}"
 AK3_DIR="${AK3_DIR:-$HOME/AnyKernel3}"
@@ -147,7 +147,7 @@ setup_clang() {
 	parent=$(dirname -- "$TC_DIR")
 	case "${CLANG_URL%%\?*}" in
 		*.tar.zst|*.tzst)
-			command -v zstd > /dev/null || die "zstd not found; install it to extract the Neutron Clang archive."
+			command -v zstd > /dev/null || die "zstd not found; install it to extract this toolchain archive."
 			;;
 	esac
 	log "Downloading Clang ($CLANG_VERSION)..."

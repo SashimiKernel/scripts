@@ -18,8 +18,8 @@ Optional environment variables:
 
 - `SKIP_UPLOAD=1` — skip the `go-up` upload.
 - `JOBS`, `MIN_FREE_GB` — build threads and minimum free space (defaults: CPU count and `20` GiB).
-- `CLANG_REV`, `CLANG_VERSION`, `CLANG_URL`, `TC_DIR` — toolchain version, download URL and installation path. Defaults to Neutron build `06092026`, identity `neutron-clang-24-06092026`, and `$HOME/tc/neutron-clang-24-06092026`.
-- Default archive: https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
+- `CLANG_REV`, `CLANG_VERSION`, `CLANG_URL`, `TC_DIR` — toolchain version, download URL and installation path. Defaults to AOSP revision `r596125`, identity `clang-22.0.2`, and `$HOME/tc/clang-22.0.2`.
+- Default archive: https://github.com/samw662/aosp-clang-toolchains/releases/download/clang-22/clang-r596125.tar.gz
 - `CLANG_SHA256` — verify the downloaded toolchain archive.
 - `AK3_DIR` — local AnyKernel3 template path.
 - `GO_UP_URL`, `GO_UP_SHA256` — uploader URL and checksum; verification also covers cached copies.

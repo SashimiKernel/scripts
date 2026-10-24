@@ -13,15 +13,15 @@ RECEIPT = '.sashimi-toolchain.json'
 
 
 def identity():
-    revision = os.environ.get('CLANG_REV', '06092026')
+    revision = os.environ.get('CLANG_REV', 'r596125')
     checksum = os.environ.get('CLANG_SHA256', '').lower()
     if checksum and (len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum)):
         raise ValueError('CLANG_SHA256 must contain 64 hexadecimal digits.')
     return {
         'revision': revision,
-        'version': os.environ.get('CLANG_VERSION', 'neutron-clang-24-06092026'),
+        'version': os.environ.get('CLANG_VERSION', 'clang-22.0.2'),
         'url': os.environ.get('CLANG_URL',
-            f'https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/{revision}/neutron-clang-{revision}.tar.zst'),
+            f'https://github.com/samw662/aosp-clang-toolchains/releases/download/clang-22/clang-{revision}.tar.gz'),
         'expected_sha256': checksum,
     }
 
