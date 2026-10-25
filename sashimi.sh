@@ -243,7 +243,7 @@ validate_config
 log ""
 log "Kernel compiled successfully! Packaging..."
 set_progress 80 packaging
-for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE CPU_IDLE_GOV_TEO ARM_QCOM_LPM_CPUIDLE_TEO; do
+for sym in KSU KSU_SUSFS KSU_MANUAL_HOOK IRQ_SBALANCE CPU_IDLE_GOV_TEO ARM_QCOM_LPM_CPUIDLE_TEO SLUB_CPU_PARTIAL CPU_FREQ_GOV_SCHEDUTIL_BANGKK; do
 	log "$(grep -E "^CONFIG_${sym}=" out/.config || printf 'CONFIG_%s is not set\n' "$sym")"
 done
 
@@ -322,10 +322,50 @@ if grep -q '^CONFIG_KSU=y' out/.config; then
 fi
 ZIPNAME="${ZIPNAME_PREFIX}-$(date '+%Y%m%d-%H%M')-${VARIANT}.zip"
 ZIP_TMP=$(mktemp -d "$PWD/.sashimi-zip.XXXXXX")
-(
-	cd "$AK3_WORK"
-	zip -r9q "$ZIP_TMP/$ZIPNAME" . -x '.git' '.git/*' '.git*' 'README.md' '*placeholder' 'config' 'build-info.json'
-) 2>&1 | tee -a "$LOG_FILE"
+python3 - "$AK3_WORK" "$ZIP_TMP/$ZIPNAME" <<'PYZIP' 2>&1 | tee -a "$LOG_FILE"
+import hashlib
+import stat
+import sys
+import zipfile
+from pathlib import Path
+
+root, output = map(Path, sys.argv[1:])
+paths = []
+for path in root.rglob('*'):
+    relative = path.relative_to(root)
+    if (any(part.startswith('.git') for part in relative.parts)
+            or relative.parts[0] == 'tests'
+            or relative.as_posix() in {'README.md', 'config', 'build-info.json', 'SHA256SUMS'}
+            or path.name.endswith('placeholder')):
+        continue
+    if path.is_symlink():
+        raise SystemExit(f'ERROR: non-regular package entry: {relative.as_posix()}')
+    if path.is_dir():
+        continue
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise SystemExit(f'ERROR: non-regular package entry: {relative.as_posix()}')
+    paths.append(path)
+manifest = []
+with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    for path in sorted(paths):
+        name = path.relative_to(root).as_posix()
+        if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode):
+            raise SystemExit(f'ERROR: non-regular package entry: {name}')
+        if any(part.startswith('.git') for part in path.relative_to(root).parts):
+            continue
+        if path.name.endswith('placeholder'):
+            continue
+        digest = hashlib.sha256()
+        info = zipfile.ZipInfo.from_file(path, name)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with path.open('rb') as source, archive.open(info, 'w') as target:
+            for block in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(block)
+                target.write(block)
+        manifest.append(f'{digest.hexdigest()}  {name}\n')
+    archive.writestr('SHA256SUMS', ''.join(manifest))
+print(f'Packaged {len(manifest)} runtime files with SHA-256 checksums.')
+PYZIP
 [[ -s "$ZIP_TMP/$ZIPNAME" ]] || die "ZIP creation failed."
 python3 - "$ZIP_TMP/$ZIPNAME" <<'PY' 2>&1 | tee -a "$LOG_FILE"
 import hashlib
@@ -344,6 +384,17 @@ def digest(stream):
 with zipfile.ZipFile(sys.argv[1]) as archive:
     if {'config', 'build-info.json'} & set(archive.namelist()):
         raise SystemExit('ERROR: build metadata must not be included in the ZIP.')
+    manifest = {}
+    for line in archive.read('SHA256SUMS').decode().splitlines():
+        checksum, name = line.split('  ', 1)
+        manifest[name] = checksum
+    if set(manifest) != set(archive.namelist()) - {'SHA256SUMS'}:
+        raise SystemExit('ERROR: incomplete package checksum manifest.')
+    for name, expected in manifest.items():
+        with archive.open(name) as packaged:
+            if digest(packaged).hex() != expected:
+                raise SystemExit(f'ERROR: package checksum mismatch: {name}')
+
     for filename, member in (('Image', 'Image'), ('dtb.img', 'dtb'), ('dtbo.img', 'dtbo.img')):
         source = boot / filename
         if not source.is_file() or not source.stat().st_size:
