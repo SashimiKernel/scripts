@@ -348,10 +348,10 @@ fi
 ksu_status="No"
 susfs_status="No"
 case "$zip_file" in
-	Sashimi-ksu-*) ksu_status="Yes" ;;
+	Sashimi-ksu-*|Sashimi-eevdf-ksu-*) ksu_status="Yes" ;;
 esac
 case "$zip_file" in
-	Sashimi-ksu-susfs-*) susfs_status="Yes" ;;
+	Sashimi-ksu-susfs-*|Sashimi-eevdf-ksu-susfs-*) susfs_status="Yes" ;;
 esac
 
 caption="🍣 Sashimi Kernel (bangkk)

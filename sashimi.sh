@@ -287,6 +287,7 @@ sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], text=True))
 info = {
     'kernel_commit': sha,
+    'kernel_branch': os.environ.get('KERNEL_BRANCH') or None,
     'kernel_modified': dirty,
     'scripts_commit': os.environ.get('SASHIMI_SCRIPTS_SHA') or None,
     'anykernel3_commit': os.environ.get('AK3_SHA') or None,
@@ -314,6 +315,9 @@ print(f"AnyKernel3: {info['anykernel3_commit'] or 'local files'}")
 PYINFO
 
 ZIPNAME_PREFIX="Sashimi"
+if [[ "${KERNEL_BRANCH:-}" == eevdf ]]; then
+	ZIPNAME_PREFIX+="-eevdf"
+fi
 if grep -q '^CONFIG_KSU=y' out/.config; then
 	ZIPNAME_PREFIX+="-ksu"
 	if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
